@@ -1,0 +1,1 @@
+Simple Model Context Protocol server to query OpenStreetMap for information and nearby points of interest (based on [projectmoon's OSM tool for Open-WebUI](https://git.agnos.is/projectmoon/open-webui-filters/src/branch/master/osm.py))

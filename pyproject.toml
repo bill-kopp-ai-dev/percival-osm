@@ -1,0 +1,11 @@
+[project]
+name = "mcp-osm"
+version = "0.1.0"
+description = "Simple Model Context Protocol server to query OpenStreetMap for information and nearby points of interest"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "httpx>=0.28.1",
+    "mcp[cli]>=1.2.1",
+    "openrouteservice>=2.3.3",
+]

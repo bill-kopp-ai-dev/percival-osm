@@ -1,0 +1,17 @@
+services:
+  mcp-osm:
+    container_name: mcp-osm
+    restart: unless-stopped
+    pull_policy: build
+    image: lowlyocean/mcp-osm:latest
+    build:
+      context: .
+      network: host
+    ports:
+      - ${PORT}:${PORT}
+    environment:
+      FASTMCP_PORT: ${PORT}
+    env_file: ${ENV_FILE}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    network_mode: ${NETWORK_MODE}
