@@ -20,7 +20,19 @@ from openrouteservice.directions import directions as ors_directions
 from urllib.parse import urljoin
 from operator import itemgetter
 
-valves = argparse.Namespace(**{key.lower(): value for key, value in dict(os.environ).items()})
+env_vars = {key.lower(): value for key, value in dict(os.environ).items()}
+
+# Set fallback default values for required OpenStreetMap parameters
+if "nominatim_url" not in env_vars:
+    env_vars["nominatim_url"] = "https://nominatim.openstreetmap.org/"
+if "ors_url" not in env_vars:
+    env_vars["ors_url"] = "https://api.openrouteservice.org"
+if "status_indicators" not in env_vars:
+    env_vars["status_indicators"] = True
+if "ors_api_key" not in env_vars:
+    env_vars["ors_api_key"] = None
+
+valves = argparse.Namespace(**env_vars)
 user_valves = None
 
 # Initialize FastMCP server
@@ -2113,4 +2125,4 @@ def find_other_things_near_place(
 
 if __name__ == "__main__":
     # Initialize and run the server
-    mcp.run(transport='sse')
+    mcp.run(transport='stdio')
