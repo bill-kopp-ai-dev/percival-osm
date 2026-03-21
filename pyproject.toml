@@ -1,7 +1,7 @@
 [project]
-name = "mcp-osm"
+name = "percival-osm"
 version = "0.1.0"
-description = "Simple Model Context Protocol server to query OpenStreetMap for information and nearby points of interest"
+description = "Percival OSM — MCP server to query OpenStreetMap for information and nearby points of interest (percival.OS component)"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
