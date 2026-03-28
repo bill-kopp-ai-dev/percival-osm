@@ -9,9 +9,17 @@ services:
       network: host
     ports:
       - ${PORT}:${PORT}
+    user: "10001:10001"
     environment:
       FASTMCP_PORT: ${PORT}
     env_file: ${ENV_FILE}
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     extra_hosts:
       - "host.docker.internal:host-gateway"
     network_mode: ${NETWORK_MODE}
