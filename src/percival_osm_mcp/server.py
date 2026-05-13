@@ -1000,7 +1000,7 @@ def sort_by_rank(things):
 
     def rank_thing(thing: dict) -> int:
         tags = thing.get("tags", {})
-        if not "tourism" in tags:
+        if "tourism" not in tags:
             return 0
 
         rank = len([name for name in tags.keys() if name.startswith("name")])
@@ -1822,7 +1822,7 @@ class OsmSearcher:
                     nav_distance = await self.calculate_navigation_distance(origin, thing)
                 except Exception as e:
                     print(f"[OSM] Error querying ORS: {e}")
-                    print(f"[OSM] Falling back to regular distance due to ORS error!")
+                    print("[OSM] Falling back to regular distance due to ORS error!")
                     nav_distance = thing["distance"]
 
             if nav_distance is not None:
@@ -2482,7 +2482,7 @@ async def find_specific_place_impl(address_or_place: str, response_mode: str) ->
                 message=NO_RESULTS,
                 query=query_payload,
             )
-    except Exception as e:
+    except Exception:
         logger.exception("Unexpected specific place lookup error")
         return build_tool_response(
             status="error",
@@ -2645,7 +2645,7 @@ class OsmNavigator:
                 query=query_payload,
             )
 
-@mcp.tool()
+@mcp.tool("osm_find_address")
 async def find_address_for_coordinates(
      latitude: Annotated[
          float,
@@ -2683,7 +2683,7 @@ async def find_address_for_coordinates(
     return await find_specific_place(
         f"{latitude}, {longitude}", ctx)
 
-@mcp.tool()
+@mcp.tool("osm_find_nearby_store")
 async def find_store_or_place_near_coordinates(
     store_or_business_name: Annotated[
         str,
@@ -2722,7 +2722,7 @@ async def find_store_or_place_near_coordinates(
     query = f"{store_or_business_name} {latitude},{longitude}"
     return await find_specific_place(query, ctx)
 
-@mcp.tool()
+@mcp.tool("osm_find_place")
 async def find_specific_place(
      address_or_place: Annotated[
          str,
@@ -2753,7 +2753,7 @@ async def find_specific_place(
     return await find_specific_place_impl(address_or_place, response_mode=response_mode)
 
 
-@mcp.tool()
+@mcp.tool("osm_find_place_detailed")
 async def find_specific_place_detailed(
      address_or_place: Annotated[
          str,
@@ -2782,7 +2782,7 @@ async def find_specific_place_detailed(
     ctx.info(f"[OSM] Searching for detailed info on [{address_or_place}].")
     return await find_specific_place_impl(address_or_place, response_mode=RESPONSE_MODE_DETAILED)
 
-@mcp.tool()
+@mcp.tool("osm_navigate")
 async def navigate_between_places(
     start_address_or_place: Annotated[
         str,
@@ -2816,7 +2816,7 @@ async def navigate_between_places(
     )
 
 
-@mcp.tool()
+@mcp.tool("osm_find_nearby")
 async def find_places_near_place(
       place: Annotated[
           str,
@@ -2856,7 +2856,7 @@ async def find_places_near_place(
     )
 
 
-@mcp.tool()
+@mcp.tool("osm_find_nearby_detailed")
 async def find_places_near_place_detailed(
       place: Annotated[
           str,
@@ -2895,139 +2895,139 @@ async def find_places_near_place_detailed(
         radius=radius,
     )
 
-@mcp.tool()
+@mcp.tool("osm_find_groceries")
 async def find_grocery_stores_near_place(
      place: Annotated[str, Field(description="The name of a place, an address, or GPS coordinates. City and country must be specified, if known.")]) -> Annotated[str, Field(description="A list of nearby grocery stores or supermarkets, if found.")]:
     """Backward-compatible alias for groceries category."""
     return await search_category_near_place(place=place, category="groceries")
 
-@mcp.tool()
+@mcp.tool("osm_find_bakeries")
 async def find_bakeries_near_place(
       place: Annotated[str, Field(description="The name of a place, an address, or GPS coordinates. City and country must be specified, if known.")]) -> Annotated[str, Field(description="A list of nearby bakeries, if found.")]:
     """Backward-compatible alias for bakeries category."""
     return await search_category_near_place(place=place, category="bakeries")
 
-@mcp.tool()
+@mcp.tool("osm_find_food")
 async def find_food_near_place(
       place: Annotated[str, Field(description="The name of a place, an address, or GPS coordinates. City and country must be specified, if known.")]) -> Annotated[str, Field(description="A list of nearby restaurants, eateries, etc, if found.")]:
     """Backward-compatible alias for food category."""
     return await search_category_near_place(place=place, category="food")
 
-@mcp.tool()
+@mcp.tool("osm_find_swimming")
 async def find_swimming_near_place(
       place: Annotated[str, Field(description="The name of a place, an address, or GPS coordinates. City and country must be specified, if known.")]) -> Annotated[str, Field(description="A list of swimming pools or places, if found.")]:
     """Backward-compatible alias for swimming category."""
     return await search_category_near_place(place=place, category="swimming")
 
-@mcp.tool()
+@mcp.tool("osm_find_playgrounds")
 async def find_playgrounds_near_place(
       place: Annotated[str, Field(description="The name of a place, an address, or GPS coordinates. City and country must be specified, if known.")]) -> Annotated[str, Field(description="A list of recreational places, if found.")]:
     """Backward-compatible alias for playgrounds category."""
     return await search_category_near_place(place=place, category="playgrounds")
 
-@mcp.tool()
+@mcp.tool("osm_find_recreation")
 async def find_recreation_near_place(
       place: Annotated[str, Field(description="The name of a place, an address, or GPS coordinates. City and country must be specified, if known.")]) -> Annotated[str, Field(description="A list of recreational places, if found.")]:
     """Backward-compatible alias for recreation category."""
     return await search_category_near_place(place=place, category="recreation")
 
-@mcp.tool()
+@mcp.tool("osm_find_attractions")
 async def find_tourist_attractions_near_place(
       place: Annotated[str, Field(description="The name of a place, an address, or GPS coordinates. City and country must be specified, if known.")]) -> Annotated[str, Field(description="A list of tourist attractions, if found.")]:
     """Backward-compatible alias for tourist attractions category."""
     return await search_category_near_place(place=place, category="tourist_attractions")
 
-@mcp.tool()
+@mcp.tool("osm_find_worship")
 async def find_place_of_worship_near_place(
       place: Annotated[str, Field(description="The name of a place, an address, or GPS coordinates. City and country must be specified, if known.")]) -> Annotated[str, Field(description="A list of nearby places of worship, if found.")]:
     """Backward-compatible alias for places of worship category."""
     return await search_category_near_place(place=place, category="places_of_worship")
 
-@mcp.tool()
+@mcp.tool("osm_find_accommodation")
 async def find_accommodation_near_place(
       place: Annotated[str, Field(description="The name of a place, an address, or GPS coordinates. City and country must be specified, if known.")]) -> Annotated[str, Field(description="A list of nearby accommodation, if found.")]:
     """Backward-compatible alias for accommodation category."""
     return await search_category_near_place(place=place, category="accommodation")
 
-@mcp.tool()
+@mcp.tool("osm_find_alcohol")
 async def find_alcohol_near_place(
       place: Annotated[str, Field(description="The name of a place, an address, or GPS coordinates. City and country must be specified, if known.")]) -> Annotated[str, Field(description="A list of nearby alcohol shops, if found.")]:
     """Backward-compatible alias for alcohol category."""
     return await search_category_near_place(place=place, category="alcohol")
 
-@mcp.tool()
+@mcp.tool("osm_find_drugs")
 async def find_drugs_near_place(
       place: Annotated[str, Field(description="The name of a place, an address, or GPS coordinates. City and country must be specified, if known.")]) -> Annotated[str, Field(description="A list of nearby cannabis and smart shops, if found.")]:
     """Backward-compatible alias for drugs category."""
     return await search_category_near_place(place=place, category="drugs")
 
-@mcp.tool()
+@mcp.tool("osm_find_schools")
 async def find_schools_near_place(
       place: Annotated[str, Field(description="The name of a place, an address, or GPS coordinates. City and country must be specified, if known.")]) -> Annotated[str, Field(description="A list of nearby schools, if found.")]:
     """Backward-compatible alias for schools category."""
     return await search_category_near_place(place=place, category="schools")
 
-@mcp.tool()
+@mcp.tool("osm_find_universities")
 async def find_universities_near_place(
       place: Annotated[str, Field(description="The name of a place, an address, or GPS coordinates. City and country must be specified, if known.")]) -> Annotated[str, Field(description="A list of nearby schools, if found.")]:
     """Backward-compatible alias for universities category."""
     return await search_category_near_place(place=place, category="universities")
 
-@mcp.tool()
+@mcp.tool("osm_find_libraries")
 async def find_libraries_near_place(
       place: Annotated[str, Field(description="The name of a place, an address, or GPS coordinates. City and country must be specified, if known.")]) -> Annotated[str, Field(description="A list of nearby libraries, if found.")]:
     """Backward-compatible alias for libraries category."""
     return await search_category_near_place(place=place, category="libraries")
 
-@mcp.tool()
+@mcp.tool("osm_find_transport")
 async def find_public_transport_near_place(
       place: Annotated[str, Field(description="The name of a place, an address, or GPS coordinates. City and country must be specified, if known.")]) -> Annotated[str, Field(description="A list of nearby public transportation stops, if found.")]:
     """Backward-compatible alias for public transport category."""
     return await search_category_near_place(place=place, category="public_transport")
 
-@mcp.tool()
+@mcp.tool("osm_find_bikes")
 async def find_bike_rentals_near_place(
       place: Annotated[str, Field(description="The name of a place, an address, or GPS coordinates. City and country must be specified, if known.")]) -> Annotated[str, Field(description="A list of nearby bike rentals, if found.")]:
     """Backward-compatible alias for bike rentals category."""
     return await search_category_near_place(place=place, category="bike_rentals")
 
-@mcp.tool()
+@mcp.tool("osm_find_cars")
 async def find_car_rentals_near_place(
       place: Annotated[str, Field(description="The name of a place, an address, or GPS coordinates. City and country must be specified, if known.")]) -> Annotated[str, Field(description="A list of nearby car rentals, if found.")]:
     """Backward-compatible alias for car rentals category."""
     return await search_category_near_place(place=place, category="car_rentals")
 
-@mcp.tool()
+@mcp.tool("osm_find_hardware")
 async def find_hardware_store_near_place(
       place: Annotated[str, Field(description="The name of a place, an address, or GPS coordinates. City and country must be specified, if known.")]) -> Annotated[str, Field(description="A list of nearby hardware/DIY stores, if found.")]:
     """Backward-compatible alias for hardware category."""
     return await search_category_near_place(place=place, category="hardware")
 
-@mcp.tool()
+@mcp.tool("osm_find_electrical")
 async def find_electrical_store_near_place(
       place: Annotated[str, Field(description="The name of a place, an address, or GPS coordinates. City and country must be specified, if known.")]) -> Annotated[str, Field(description="A list of nearby electrical/lighting stores, if found.")]:
     """Backward-compatible alias for electrical category."""
     return await search_category_near_place(place=place, category="electrical")
 
-@mcp.tool()
+@mcp.tool("osm_find_electronics")
 async def find_electronics_store_near_place(
       place: Annotated[str, Field(description="The name of a place, an address, or GPS coordinates. City and country must be specified, if known.")]) -> Annotated[str, Field(description="A list of nearby electronics stores, if found.")]:
     """Backward-compatible alias for electronics category."""
     return await search_category_near_place(place=place, category="electronics")
 
-@mcp.tool()
+@mcp.tool("osm_find_doctors")
 async def find_doctor_near_place(
       place: Annotated[str, Field(description="The name of a place, an address, or GPS coordinates. City and country must be specified, if known.")]) -> Annotated[str, Field(description="A list of nearby doctors, if found.")]:
     """Backward-compatible alias for doctors category."""
     return await search_category_near_place(place=place, category="doctors")
 
-@mcp.tool()
+@mcp.tool("osm_find_hospitals")
 async def find_hospital_near_place(
       place: Annotated[str, Field(description="The name of a place, an address, or GPS coordinates. City and country must be specified, if known.")]) -> Annotated[str, Field(description="A list of nearby hospitals, if found.")]:
     """Backward-compatible alias for hospitals category."""
     return await search_category_near_place(place=place, category="hospitals")
 
-@mcp.tool()
+@mcp.tool("osm_find_pharmacy")
 async def find_pharmacy_near_place(
       place: Annotated[str, Field(description="The name of a place, an address, or GPS coordinates. City and country must be specified, if known.")]) -> Annotated[str, Field(description="A list of nearby pharmacies, if found.")]:
     """Backward-compatible alias for pharmacies category."""
@@ -3038,7 +3038,7 @@ async def find_pharmacy_near_place(
 # does not yet support. By having the model pick this function, we
 # can direct it to report its capabilities and tell the user how
 # to use it. It's not perfect, but it works sometimes.
-@mcp.tool()
+@mcp.tool("osm_find_other")
 def find_other_things_near_place(
     place: Annotated[
         str,
@@ -3093,7 +3093,7 @@ def find_other_things_near_place(
     return resp
 
 
-@mcp.tool()
+@mcp.tool("osm_get_security_metrics")
 def get_security_metrics() -> Annotated[
     str,
     Field(
@@ -3115,6 +3115,12 @@ def get_security_metrics() -> Annotated[
         data={"security_metrics": get_security_metrics_snapshot()},
         include_untrusted_warning=False,
     )
+
+
+@mcp.tool("osm_get_status")
+def get_status() -> str:
+    """Check the operational status of the OSM server."""
+    return f"Percival OSM Server operational. Cache: {valves.cache_file}"
 
 
 async def run_server(
