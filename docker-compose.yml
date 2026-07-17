@@ -3,7 +3,7 @@ services:
     container_name: mcp-osm
     restart: unless-stopped
     pull_policy: build
-    image: lowlyocean/mcp-osm:latest
+    image: percival-osm:local
     build:
       context: .
       network: host

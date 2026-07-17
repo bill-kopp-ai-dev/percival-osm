@@ -1,5 +1,6 @@
 from mcp.server.fastmcp import FastMCP, Context
 import argparse
+import sys
 import asyncio
 import html
 import hmac
@@ -12,18 +13,16 @@ import time
 from threading import Lock
 
 from typing import Any, Annotated, List, Mapping, Optional, Tuple
+from datetime import datetime, timezone
+import functools
+import inspect
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-import itertools
 import hashlib
 import json
 import math
 import httpx
-
-from pygments import highlight
-from pygments.lexers import JsonLexer
-from pygments.formatters import HtmlFormatter
 
 import openrouteservice
 from openrouteservice.directions import directions as ors_directions
@@ -35,6 +34,9 @@ import uvicorn
 
 from urllib.parse import urljoin, urlsplit
 from operator import itemgetter
+from itertools import batched
+
+from .osm_primitives import register_all_primitives
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -159,6 +161,35 @@ class Settings(BaseSettings):
         default="MCP_OSM_AUTH_TOKEN",
         validation_alias=AliasChoices("auth_token_env", "MCP_OSM_AUTH_TOKEN_ENV"),
     )
+    expose_legacy_aliases: bool = Field(
+        default=True,
+        validation_alias=AliasChoices(
+            "expose_legacy_aliases",
+            "OSM_EXPOSE_LEGACY_ALIASES",
+        ),
+    )
+    log_format: str = Field(
+        default="plain",
+        validation_alias=AliasChoices("log_format", "OSM_LOG_FORMAT"),
+    )
+    log_level: str = Field(
+        default="INFO",
+        validation_alias=AliasChoices("log_level", "OSM_LOG_LEVEL"),
+    )
+    nominatim_rate_limit_rps: float = Field(
+        default=1.0,
+        validation_alias=AliasChoices(
+            "nominatim_rate_limit_rps",
+            "OSM_NOMINATIM_RATE_LIMIT_RPS",
+        ),
+    )
+    nominatim_rate_limit_burst: int = Field(
+        default=2,
+        validation_alias=AliasChoices(
+            "nominatim_rate_limit_burst",
+            "OSM_NOMINATIM_RATE_LIMIT_BURST",
+        ),
+    )
 
 
 def _stable_cache_key(prefix: str, payload: Any) -> str:
@@ -178,7 +209,65 @@ def _thing_id(thing: dict) -> Optional[str]:
 valves = Settings()
 user_valves = None
 
-logging.basicConfig(level=logging.INFO)
+
+class _JsonFormatter(logging.Formatter):
+    """Emit log records as compact one-line JSON on stderr."""
+
+    # Standard LogRecord attributes we don't want to forward as `extra`.
+    _RESERVED = {
+        "name", "msg", "args", "levelname", "levelno", "pathname", "filename",
+        "module", "exc_info", "exc_text", "stack_info", "lineno", "funcName",
+        "created", "msecs", "relativeCreated", "thread", "threadName",
+        "processName", "process", "message", "asctime", "taskName",
+    }
+
+    def format(self, record: logging.LogRecord) -> str:
+        payload: dict[str, object] = {
+            "ts": self.formatTime(record, datefmt="%Y-%m-%dT%H:%M:%S%z"),
+            "level": record.levelname,
+            "logger": record.name,
+            "msg": record.getMessage(),
+        }
+        for key, value in record.__dict__.items():
+            if key in self._RESERVED or key.startswith("_"):
+                continue
+            payload[key] = value
+        if record.exc_info:
+            payload["exc"] = self.formatException(record.exc_info)
+        return json.dumps(payload, ensure_ascii=False, default=str)
+
+
+def _configure_logging() -> None:
+    """Configure root + module loggers from the Settings.
+
+    Honors ``OSM_LOG_FORMAT`` (plain|json) and ``OSM_LOG_LEVEL`` (DEBUG/INFO/...).
+    """
+    level_name = (valves.log_level or "INFO").upper()
+    level = getattr(logging, level_name, logging.INFO)
+
+    # Wipe pre-existing handlers so reconfiguration (e.g. tests) is clean.
+    root = logging.getLogger()
+    for h in list(root.handlers):
+        root.removeHandler(h)
+
+    handler = logging.StreamHandler(stream=sys.stderr)
+    fmt_kind = (valves.log_format or "plain").strip().lower()
+    if fmt_kind == "json":
+        handler.setFormatter(_JsonFormatter())
+    else:
+        handler.setFormatter(
+            logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+        )
+    root.addHandler(handler)
+    root.setLevel(level)
+
+    # Quiet down noisy third-party loggers unless explicitly debugging.
+    if level > logging.DEBUG:
+        for noisy in ("httpx", "httpcore", "openrouteservice"):
+            logging.getLogger(noisy).setLevel(logging.WARNING)
+
+
+_configure_logging()
 logger = logging.getLogger("percival-osm")
 
 SERVER_NAME = "percival-osm"
@@ -197,41 +286,9 @@ mcp = FastMCP(
     stateless_http=False,
 )
 
-# Yoinked from the OpenWebUI CSS
-FONTS = ",".join(
-    [
-        "-apple-system",
-        "BlinkMacSystemFont",
-        "Inter",
-        "ui-sans-serif",
-        "system-ui",
-        "Segoe UI",
-        "Roboto",
-        "Ubuntu",
-        "Cantarell",
-        "Noto Sans",
-        "sans-serif",
-        "Helvetica Neue",
-        "Arial",
-        '"Apple Color Emoji"',
-        '"Segoe UI Emoji"',
-        "Segoe UI Symbol",
-        '"Noto Color Emoji"',
-    ]
-)
-
-FONT_CSS = f"""
-html {{ font-family: {FONTS}; }}
-
-@media (prefers-color-scheme: dark) {{
-  html {{
-    --tw-text-opacity: 1;
-    color: rgb(227 227 227 / var(--tw-text-opacity));
-  }}
-}}
-"""
-
-HIGHLIGHT_CSS = HtmlFormatter().get_style_defs(".highlight")
+# Register MCP prompt and resource primitives. See osm_primitives.py for
+# the content; this call attaches 3 prompts and 2 resources to the server.
+register_all_primitives(mcp)
 
 NOMINATIM_LOOKUP_TYPES = {"node": "N", "route": "R", "way": "W"}
 
@@ -277,6 +334,14 @@ _MARKDOWN_ESCAPE_RE = re.compile(r"([\\`*_{}\[\]()#+\-.!|>])")
 _LOCAL_HOSTNAME_DENYLIST = {"localhost", "localhost.localdomain"}
 _SECURITY_METRICS_LOCK = Lock()
 _SECURITY_METRICS: dict[str, int] = {}
+
+# Operational telemetry (separate from security counters).
+_OPERATIONAL_LOCK = Lock()
+_TOOL_CALL_COUNTS: dict[str, int] = {}
+_TOOL_ERROR_COUNTS: dict[str, int] = {}
+_LAST_UPSTREAM_FAILURE: dict[str, object] = {}  # {kind, message, ts}
+_SERVER_START_TS: float = time.time()
+SERVER_VERSION = "0.4.0"
 
 POI_CATEGORY_SPECS: dict[str, dict[str, Any]] = {
     "groceries": {
@@ -504,6 +569,49 @@ def reset_security_metrics_for_tests() -> None:
         _SECURITY_METRICS.clear()
 
 
+def record_tool_call(tool_name: str, *, error: bool = False) -> None:
+    """Increment per-tool call/error counters (operational telemetry)."""
+    safe_name = sanitize_external_text(tool_name, max_length=80) or "unknown"
+    with _OPERATIONAL_LOCK:
+        _TOOL_CALL_COUNTS[safe_name] = _TOOL_CALL_COUNTS.get(safe_name, 0) + 1
+        if error:
+            _TOOL_ERROR_COUNTS[safe_name] = _TOOL_ERROR_COUNTS.get(safe_name, 0) + 1
+
+
+def record_upstream_failure(kind: str, message: str) -> None:
+    """Track the most recent upstream failure (rate-limited, blocked, network)."""
+    safe_kind = sanitize_external_text(kind, max_length=40) or "unknown"
+    safe_msg = sanitize_external_text(message, max_length=200)
+    with _OPERATIONAL_LOCK:
+        _LAST_UPSTREAM_FAILURE.clear()
+        _LAST_UPSTREAM_FAILURE.update(
+            {"kind": safe_kind, "message": safe_msg, "ts": time.time()}
+        )
+
+
+def get_operational_snapshot() -> dict[str, Any]:
+    """Build a snapshot of operational metrics for the health/version tools."""
+    with _OPERATIONAL_LOCK:
+        tool_calls = dict(_TOOL_CALL_COUNTS)
+        tool_errors = dict(_TOOL_ERROR_COUNTS)
+        last_failure = dict(_LAST_UPSTREAM_FAILURE) if _LAST_UPSTREAM_FAILURE else None
+    return {
+        "uptime_seconds": round(time.time() - _SERVER_START_TS, 3),
+        "tool_calls": tool_calls,
+        "tool_errors": tool_errors,
+        "last_upstream_failure": last_failure,
+    }
+
+
+def reset_operational_metrics_for_tests() -> None:
+    global _SERVER_START_TS
+    with _OPERATIONAL_LOCK:
+        _TOOL_CALL_COUNTS.clear()
+        _TOOL_ERROR_COUNTS.clear()
+        _LAST_UPSTREAM_FAILURE.clear()
+        _SERVER_START_TS = time.time()
+
+
 def _path_is_within(path: Path, parent: Path) -> bool:
     return path == parent or parent in path.parents
 
@@ -709,26 +817,17 @@ def _validate_http_runtime_security(
         )
 
 
-def create_starlette_app(mcp_server: FastMCP) -> Starlette:
-    """Return an SSE Starlette app from a FastMCP server."""
-    return mcp_server.sse_app()
-
-
-def create_streamable_http_app(mcp_server: FastMCP) -> Starlette:
-    """Return a Streamable HTTP Starlette app from a FastMCP server."""
-    return mcp_server.streamable_http_app()
-
-
-def _create_http_transport_app(
+def _build_http_app(
     mcp_server: FastMCP,
     *,
     mode: str,
     auth_token: str | None,
 ) -> Starlette:
+    """Build the Starlette app for the chosen HTTP transport."""
     if mode == "sse":
-        http_app = create_starlette_app(mcp_server)
+        http_app = mcp_server.sse_app()
     elif mode == "streamable-http":
-        http_app = create_streamable_http_app(mcp_server)
+        http_app = mcp_server.streamable_http_app()
     else:
         raise ValueError(f"Unsupported HTTP mode: {mode}")
 
@@ -746,7 +845,7 @@ async def _run_http_transport(
     port: int,
     auth_token: str | None,
 ) -> None:
-    http_app = _create_http_transport_app(
+    http_app = _build_http_app(
         mcp_server,
         mode=mode,
         auth_token=auth_token,
@@ -756,8 +855,8 @@ async def _run_http_transport(
     await uvicorn_server.serve()
 
 def chunk_list(input_list, chunk_size):
-    it = iter(input_list)
-    return list(itertools.zip_longest(*[iter(it)] * chunk_size, fillvalue=None))
+    """Split a list into fixed-size chunks (last chunk may be smaller)."""
+    return [list(chunk) for chunk in batched(input_list, chunk_size)]
 
 
 def to_lookup(thing) -> Optional[str]:
@@ -888,14 +987,6 @@ def merge_from_nominatim(thing, nominatim_result) -> Optional[dict]:
     return thing
 
 
-def pretty_print_thing_json(thing):
-    """Converts an OSM thing to nice JSON HTML."""
-    formatted_json_str = json.dumps(thing, indent=2)
-    lexer = JsonLexer()
-    formatter = HtmlFormatter(style="colorful")
-    return highlight(formatted_json_str, lexer, formatter)
-
-
 def thing_is_useful(thing):
     """
     Determine if an OSM way entry is useful to us. This means it
@@ -928,10 +1019,8 @@ def thing_is_useful(thing):
 
 
 def thing_has_info(thing):
-    has_name = any("name" in tag for tag in thing["tags"])
+    has_name = "name" in thing["tags"]
     return thing_is_useful(thing) and has_name
-    # is_exception = way['tags'].get('leisure', None) is not None
-    # return has_tags and (has_name or is_exception)
 
 
 def process_way_result(way) -> Optional[dict]:
@@ -1322,6 +1411,62 @@ def convert_and_validate_results(
     return f"{header}\n\n{result_text}"
 
 
+class AsyncTokenBucket:
+    """Async token-bucket rate limiter.
+
+    Each :meth:`acquire` consumes one token, refilling at ``rate_per_second``
+    tokens per second up to ``burst``. When the bucket is empty, the caller
+    awaits until a token becomes available.
+    """
+
+    def __init__(self, rate_per_second: float, burst: int) -> None:
+        self._rate = max(0.0, float(rate_per_second))
+        self._capacity = max(1, int(burst))
+        self._tokens = float(self._capacity)
+        self._last = time.monotonic()
+        self._lock = asyncio.Lock()
+        self._cv = asyncio.Condition(self._lock)
+
+    @property
+    def disabled(self) -> bool:
+        return self._rate <= 0.0
+
+    def _refill(self) -> None:
+        now = time.monotonic()
+        elapsed = now - self._last
+        if elapsed > 0:
+            self._tokens = min(
+                float(self._capacity), self._tokens + elapsed * self._rate
+            )
+            self._last = now
+
+    async def acquire(self) -> None:
+        """Block until a token is available."""
+        if self.disabled:
+            return
+        async with self._cv:
+            while True:
+                self._refill()
+                if self._tokens >= 1.0:
+                    self._tokens -= 1.0
+                    return
+                deficit = 1.0 - self._tokens
+                wait = deficit / self._rate if self._rate > 0 else 0.1
+                try:
+                    await asyncio.wait_for(
+                        self._cv.wait(), timeout=max(wait, 0.001)
+                    )
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    # Re-evaluate after the wake-up interval; another consumer
+                    # may have taken the token, or enough time elapsed for refill.
+                    pass
+                # Loop: another consumer may have taken the token we were waiting for.
+
+    def reset(self) -> None:
+        self._tokens = float(self._capacity)
+        self._last = time.monotonic()
+
+
 class OsmCache:
     _LOCKS_GUARD = Lock()
     _FILE_LOCKS: dict[str, Lock] = {}
@@ -1408,25 +1553,6 @@ class OsmCache:
             entries[str(key)] = {"value": value, "expires_at": expires_at}
             self._persist()
 
-    def get_or_set(self, key, func_to_call):
-        """
-        Retrieve the value from the cache for a given key. If the key is not found,
-        call `func_to_call` to generate the value and store it in the cache.
-
-        :param key: The key to look up or set in the cache
-        :param func_to_call: A callable function that returns the value if key is missing
-        :return: The cached or generated value
-        """
-        lock = self._lock_for_file(self.filename)
-        with lock:
-            current = self._get_entry(str(key))
-            if current is not None:
-                return current.get("value")
-
-        value = func_to_call()
-        self.set(key, value)
-        return value
-
     def clear_cache(self):
         """
         Clear all entries from the cache.
@@ -1504,7 +1630,7 @@ class OrsRouter:
         )
         cached_route = self.cache.get(cache_key)
         if cached_route:
-            print("[OSM] Got route from cache!")
+            logger.debug("Got route from cache")
             return cached_route
 
         resp = ors_directions(
@@ -1547,6 +1673,19 @@ class OsmSearcher:
             filename=self.valves.cache_file,
             default_ttl_seconds=self.valves.cache_ttl_seconds,
         )
+        self._http_client: Optional[httpx.AsyncClient] = None
+        self._http_client_lock = asyncio.Lock()
+        self._validated_upstreams: set[str] = set()
+        self._validated_upstreams_lock = asyncio.Lock()
+        # Single-flight cache for in-progress ORS distance calculations.
+        # Maps cache_key -> asyncio.Future, allowing concurrent callers for
+        # the same key to share a single upstream call instead of stampeding.
+        self._distance_futures: dict[str, asyncio.Future] = {}
+        self._distance_futures_lock = asyncio.Lock()
+        self._nominatim_limiter = AsyncTokenBucket(
+            rate_per_second=self.valves.nominatim_rate_limit_rps,
+            burst=self.valves.nominatim_rate_limit_burst,
+        )
 
     def create_headers(self) -> Optional[dict]:
         if len(self.valves.user_agent.strip()) == 0 or len(self.valves.from_header.strip()) == 0:
@@ -1585,22 +1724,54 @@ class OsmSearcher:
             return source.get(key, None)
         return getattr(source, key, None)
 
+    async def _get_http_client(self) -> httpx.AsyncClient:
+        if self._http_client is None:
+            async with self._http_client_lock:
+                if self._http_client is None:
+                    self._http_client = httpx.AsyncClient(
+                        timeout=httpx.Timeout(self.valves.http_timeout_seconds),
+                        follow_redirects=self.valves.http_follow_redirects,
+                    )
+        return self._http_client
+
+    async def aclose(self) -> None:
+        if self._http_client is not None:
+            await self._http_client.aclose()
+            self._http_client = None
+
+    def _rate_limiter_for(self, url: str) -> Optional[AsyncTokenBucket]:
+        """Return the appropriate rate limiter for a given upstream URL."""
+        try:
+            host = (urlsplit(url).hostname or "").lower()
+        except ValueError:
+            return None
+        if host.endswith("nominatim.openstreetmap.org"):
+            return self._nominatim_limiter
+        return None
+
     async def _http_get_json(self, url: str, params: dict[str, Any], headers: dict[str, str]) -> Any:
-        validate_upstream_url_policy(url, settings=self.valves, label="upstream_request_url")
+        # Race-free check-then-add via asyncio lock so that two concurrent
+        # callers don't both run validate_upstream_url_policy for the same
+        # URL (which would duplicate security events and risk settings races).
+        async with self._validated_upstreams_lock:
+            if url not in self._validated_upstreams:
+                validate_upstream_url_policy(
+                    url, settings=self.valves, label="upstream_request_url"
+                )
+                self._validated_upstreams.add(url)
         max_attempts = max(1, self.valves.http_max_retries + 1)
         backoff = max(0.0, self.valves.http_retry_backoff_seconds)
-        timeout = httpx.Timeout(self.valves.http_timeout_seconds)
         max_response_bytes = max(1024, int(self.valves.http_max_response_bytes))
         last_exception: Optional[Exception] = None
+        rate_limiter = self._rate_limiter_for(url)
 
         for attempt in range(max_attempts):
             try:
+                if rate_limiter is not None:
+                    await rate_limiter.acquire()
                 async with self._http_semaphore:
-                    async with httpx.AsyncClient(
-                        timeout=timeout,
-                        follow_redirects=self.valves.http_follow_redirects,
-                    ) as client:
-                        response = await client.get(url, params=params, headers=headers)
+                    client = await self._get_http_client()
+                    response = await client.get(url, params=params, headers=headers)
 
                 redirect_chain = [*response.history, response]
                 for hop in redirect_chain:
@@ -1644,6 +1815,7 @@ class OsmSearcher:
                     url=url,
                     error_type=type(exc).__name__,
                 )
+                record_upstream_failure(type(exc).__name__, str(exc))
                 is_retryable = isinstance(exc, httpx.RequestError) or (
                     isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code >= 500
                 )
@@ -1806,6 +1978,38 @@ class OsmSearcher:
         """Calculate real distance from A to B, instead of Haversine."""
         return await self._ors.calculate_distance_async(start, destination)
 
+    async def _resolve_distance(self, cache_key: str, origin, thing):
+        """Resolve an ORS navigable distance with single-flight semantics.
+
+        Concurrent callers asking for the same cache_key share a single
+        upstream ORS call instead of triggering duplicate requests. The
+        future is stored in ``self._distance_futures`` so the second caller
+        awaits the first call's result.
+        """
+        loop = asyncio.get_running_loop()
+        async with self._distance_futures_lock:
+            future = self._distance_futures.get(cache_key)
+            if future is None:
+                future = loop.create_future()
+                self._distance_futures[cache_key] = future
+
+                async def _run():
+                    try:
+                        result = await self.calculate_navigation_distance(
+                            origin, thing
+                        )
+                        future.set_result(result)
+                    except Exception as exc:
+                        future.set_exception(exc)
+                    finally:
+                        # Always drop the future so retries can run later.
+                        async with self._distance_futures_lock:
+                            self._distance_futures.pop(cache_key, None)
+
+                loop.create_task(_run())
+
+        return await future
+
     async def attempt_ors(self, origin, things_nearby) -> bool:
         """Update distances to use ORS navigable distances, if ORS enabled."""
         used_ors = False
@@ -1815,14 +2019,17 @@ class OsmSearcher:
             nav_distance = self._cache.get(cache_key)
 
             if nav_distance is not None:
-                print(f"[OSM] Got nav distance for {thing_id} from cache!")
+                logger.debug("Got nav distance for %s from cache", thing_id)
             else:
-                print(f"[OSM] Checking ORS for {thing_id}")
+                logger.debug("Checking ORS for %s", thing_id)
                 try:
-                    nav_distance = await self.calculate_navigation_distance(origin, thing)
+                    nav_distance = await self._resolve_distance(
+                        cache_key, origin, thing
+                    )
                 except Exception as e:
-                    print(f"[OSM] Error querying ORS: {e}")
-                    print("[OSM] Falling back to regular distance due to ORS error!")
+                    logger.warning("Error querying ORS: %s", e)
+                    record_upstream_failure("ORS", str(e))
+                    logger.debug("Falling back to regular distance due to ORS error")
                     nav_distance = thing["distance"]
 
             if nav_distance is not None:
@@ -1917,11 +2124,11 @@ class OsmSearcher:
         lookups = [id for id in lookups if id not in lookups_to_remove]
 
         if len(lookups) == 0:
-            print("[OSM] Got all Nominatim info from cache!")
+            logger.debug("Got all Nominatim info from cache")
             await self.event_fetching(done=True)
             return updated_things
         else:
-            print(f"Looking up {len(lookups)} things from Nominatim")
+            logger.debug("Looking up %d things from Nominatim", len(lookups))
 
         url = urljoin(self.valves.nominatim_url, "lookup")
         params = {"osm_ids": ",".join(lookups), "format": format}
@@ -1934,11 +2141,11 @@ class OsmSearcher:
             data = await self._http_get_json(url, params=params, headers=headers)
         except Exception as exc:
             await self.event_error(exc)
-            print(exc)
+            logger.warning("Nominatim lookup request failed: %s", exc)
             return []
 
         if not data:
-            print("[OSM] No results found for lookup")
+            logger.debug("No results found for Nominatim lookup")
             await self.event_fetching(done=True)
             return []
 
@@ -1968,14 +2175,14 @@ class OsmSearcher:
             "nominatim_search",
             {"query": query, "format": format, "limit": limit},
         )
-        data = self._cache.get(cache_key)
+        cached_full = self._cache.get(cache_key)
 
-        if data:
-            print(f"[OSM] Got nominatim search data for {query} from cache!")
+        if isinstance(cached_full, list):
+            logger.debug("Got nominatim search data for %s from cache", query)
             await self.event_resolving(done=True)
-            return data[:limit]
+            return cached_full[:limit]
 
-        print(f"[OSM] Searching Nominatim for: {query}")
+        logger.debug("Searching Nominatim for: %s", query)
 
         url = urljoin(self.valves.nominatim_url, "search")
         params = {
@@ -1994,7 +2201,8 @@ class OsmSearcher:
             data = await self._http_get_json(url, params=params, headers=headers)
         except Exception as exc:
             await self.event_error(exc)
-            print(exc)
+            logger.warning("Nominatim search request failed: %s", exc)
+            record_upstream_failure("NominatimSearch", str(exc))
             return None
 
         await self.event_resolving(done=True)
@@ -2002,9 +2210,74 @@ class OsmSearcher:
         if not data:
             raise ValueError(f"No results found for query '{query}'")
 
-        print(f"Got result from Nominatim for: {query}")
+        logger.debug("Got result from Nominatim for: %s", query)
+        # Cache the full result for this (query, format, limit) tuple.
+        # Different limits get separate cache entries to avoid stale slicing.
         self._cache.set(cache_key, data)
         return data[:limit]
+
+    async def nominatim_reverse(
+        self,
+        latitude: float,
+        longitude: float,
+        zoom: int = 18,
+        format: str = "json",
+        addressdetails: int = 1,
+    ) -> Optional[dict]:
+        """Reverse-geocode coordinates via Nominatim's `/reverse` endpoint.
+
+        Returns the single best-matching place dict or None on failure.
+        """
+        await self.event_resolving(done=False)
+        cache_key = _stable_cache_key(
+            "nominatim_reverse",
+            {
+                "lat": round(float(latitude), 6),
+                "lon": round(float(longitude), 6),
+                "zoom": int(zoom),
+                "format": format,
+                "addressdetails": int(addressdetails),
+            },
+        )
+        cached = self._cache.get(cache_key)
+        if isinstance(cached, dict):
+            logger.debug(
+                "Got nominatim reverse data for (%s, %s) from cache",
+                latitude,
+                longitude,
+            )
+            await self.event_resolving(done=True)
+            return cached
+
+        logger.debug("Reverse geocoding (%s, %s)", latitude, longitude)
+        url = urljoin(self.valves.nominatim_url, "reverse")
+        params = {
+            "lat": latitude,
+            "lon": longitude,
+            "zoom": zoom,
+            "format": format,
+            "addressdetails": addressdetails,
+        }
+        headers = self.create_headers()
+        if not headers:
+            await self.event_error("Headers not set")
+            await self.event_resolving(done=True)
+            raise ValueError("Headers not set")
+
+        try:
+            data = await self._http_get_json(url, params=params, headers=headers)
+        except Exception as exc:
+            await self.event_error(exc)
+            logger.warning("Nominatim reverse request failed: %s", exc)
+            await self.event_resolving(done=True)
+            return None
+
+        await self.event_resolving(done=True)
+        if not data:
+            return None
+
+        self._cache.set(cache_key, data)
+        return data
 
     async def overpass_search(
         self, place, tags, bbox, limit=5, radius=4000
@@ -2014,7 +2287,7 @@ class OsmSearcher:
         post-processing is done on ways in order to add coordinates to
         them.
         """
-        print(f"Searching Overpass Turbo around origin {place}")
+        logger.debug("Searching Overpass Turbo around origin %s", place)
         headers = self.create_headers()
         if not headers:
             raise ValueError("Headers not set")
@@ -2047,7 +2320,7 @@ class OsmSearcher:
             out geom;
         """
 
-        print(query)
+        logger.debug("Overpass query: %s", query)
         data = {"data": query}
         cache_key = _stable_cache_key(
             "overpass_search",
@@ -2066,6 +2339,7 @@ class OsmSearcher:
         try:
             payload = await self._http_get_json(url, params=data, headers=headers)
         except Exception as exc:
+            record_upstream_failure("Overpass", str(exc))
             raise Exception(f"Error calling Overpass API: {exc}") from exc
 
         # nodes have exact GPS coordinates. we also include useful way entries,
@@ -2093,7 +2367,7 @@ class OsmSearcher:
 
         # attempt to update ways that have no names/addresses.
         if len(things_missing_names) > 0:
-            print(f"Updating {len(things_missing_names)} things with info")
+            logger.debug("Updating %d things with info", len(things_missing_names))
             for way_chunk in chunk_list(things_missing_names, 20):
                 updated = await self.nominatim_lookup_by_id(way_chunk)
                 ways = ways + updated
@@ -2196,7 +2470,7 @@ class OsmSearcher:
                 else:
                     place_display_name = place
             else:
-                print(f"WARN: Could not find display name for place: {place}")
+                logger.warning("Could not find display name for place: %s", place)
                 place_display_name = place
 
             await self.event_searching(category, place_display_name, done=False)
@@ -2208,7 +2482,7 @@ class OsmSearcher:
                 "maxlon": nominatim_result["boundingbox"][3],
             }
 
-            print(f"[OSM] Searching for {category} near {place_display_name}")
+            logger.debug("Searching for %s near %s", category, place_display_name)
             things_nearby = await self.get_things_nearby(
                 nominatim_result, place, tags, bbox, limit, radius
             )
@@ -2231,8 +2505,11 @@ class OsmSearcher:
                     "things": [],
                 }
 
-            print(
-                f"[OSM] Found {len(things_nearby)} {category} results near {place_display_name}"
+            logger.debug(
+                "Found %d %s results near %s",
+                len(things_nearby),
+                category,
+                place_display_name,
             )
 
             # Only print the full result instructions if we
@@ -2317,7 +2594,7 @@ async def do_osm_search(
     # handle breaking 1.0 change, in case of old Nominatim valve settings.
     if valves.nominatim_url.endswith("/search"):
         message = "Old Nominatim URL setting still in use!"
-        print(f"[OSM] ERROR: {message}")
+        logger.error("%s", message)
         if valves.status_indicators and event_emitter is not None:
             await event_emitter(
                 {
@@ -2341,7 +2618,9 @@ async def do_osm_search(
             include_untrusted_warning=False,
         )
 
-    print(f"[OSM] Searching for [{category}] ({tags[0]}, etc) near place: {place}")
+    logger.debug(
+        "Searching for [%s] (%s, etc) near place: %s", category, tags[0], place
+    )
     searcher = OsmSearcher(valves, user_valves, event_emitter)
     search = await searcher.search_nearby(
         place,
@@ -2369,7 +2648,7 @@ async def do_osm_search_full(
     # handle breaking 1.0 change, in case of old Nominatim valve settings.
     if valves.nominatim_url.endswith("/search"):
         message = "Old Nominatim URL setting still in use!"
-        print(f"[OSM] ERROR: {message}")
+        logger.error("%s", message)
         if valves.status_indicators and event_emitter is not None:
             await event_emitter(
                 {
@@ -2397,7 +2676,9 @@ async def do_osm_search_full(
             "things": [],
         }
 
-    print(f"[OSM] Searching for [{category}] ({tags[0]}, etc) near place: {place}")
+    logger.debug(
+        "Searching for [%s] (%s, etc) near place: %s", category, tags[0], place
+    )
     searcher = OsmSearcher(valves, user_valves, event_emitter)
     return await searcher.search_nearby(
         place,
@@ -2645,6 +2926,147 @@ class OsmNavigator:
                 query=query_payload,
             )
 
+    async def directions(self, start_place: str, destination_place: str):
+        """Turn-by-turn variant of ``navigate``.
+
+        Returns a structured ``steps`` list (instruction, distance, duration)
+        that downstream agents can walk through one entry at a time.
+        """
+        await self.event_navigating(done=False)
+        searcher = OsmSearcher(self.valves, self.user_valves, self.event_emitter)
+        router = OrsRouter(self.valves, self.user_valves, self.event_emitter)
+        query_payload = {
+            "start_place": sanitize_external_text(start_place, max_length=220),
+            "destination_place": sanitize_external_text(destination_place, max_length=220),
+        }
+
+        try:
+            start = await searcher.nominatim_search(start_place, limit=1)
+            destination = await searcher.nominatim_search(destination_place, limit=1)
+
+            if not start or not destination:
+                await self.event_navigating(done=True)
+                return build_tool_response(
+                    status="no_results",
+                    message=NO_RESULTS,
+                    query=query_payload,
+                )
+
+            start, destination = start[0], destination[0]
+            route = await asyncio.to_thread(router.calculate_route, start, destination)
+
+            if not route:
+                await self.event_navigating(done=True)
+                return build_tool_response(
+                    status="no_results",
+                    message=NO_RESULTS,
+                    query=query_payload,
+                )
+
+            summary = route.get("summary", {})
+            try:
+                total_distance = round(float(summary.get("distance", 0.0)), 2)
+            except (TypeError, ValueError):
+                total_distance = 0.0
+            try:
+                travel_time = round(float(summary.get("duration", 0.0)) / 60.0, 2)
+            except (TypeError, ValueError):
+                travel_time = 0.0
+            travel_type = "car" if total_distance > 1.5 else "walking/biking"
+
+            steps: list[dict[str, object]] = []
+            for seg_idx, segment in enumerate(route.get("segments", [])):
+                for step_idx, step in enumerate(segment.get("steps", [])):
+                    instruction = sanitize_external_text(
+                        step.get("instruction", "Proceed"), max_length=280
+                    )
+                    raw_distance = float(step.get("distance", 0.0) or 0.0)
+                    raw_duration_s = float(step.get("duration", 0.0) or 0.0)
+                    steps.append(
+                        {
+                            "order": len(steps) + 1,
+                            "segment": seg_idx + 1,
+                            "step_in_segment": step_idx + 1,
+                            "instruction": instruction,
+                            "distance_km": round(raw_distance, 3),
+                            "distance_m": round(raw_distance * 1000.0, 1),
+                            "duration_min": round(raw_duration_s / 60.0, 3),
+                            "duration_sec": round(raw_duration_s, 1),
+                        }
+                    )
+
+            safe_start = sanitize_external_markdown(start_place, max_length=220)
+            safe_destination = sanitize_external_markdown(destination_place, max_length=220)
+            markdown_lines: list[str] = [
+                "## Turn-by-Turn Directions",
+                f"Route from {safe_start} to {safe_destination}.",
+                "",
+                f" - Total Distance: {total_distance} km",
+                f" - Travel Time: {travel_time} min",
+                f" - Travel Type: {travel_type}",
+                "",
+                "Steps:",
+            ]
+            for s in steps:
+                markdown_lines.append(
+                    f"  {s['order']}. {sanitize_external_markdown(s['instruction'], max_length=280)} "
+                    f"({s['distance_km']} km, {s['duration_min']} min)"
+                )
+
+            await self.event_navigating(done=True)
+            return build_tool_response(
+                status="ok",
+                message=f"Route found with {len(steps)} step(s).",
+                query=query_payload,
+                data={
+                    "travel_type": travel_type,
+                    "total_distance_km": total_distance,
+                    "travel_time_min": travel_time,
+                    "step_count": len(steps),
+                    "steps": steps,
+                    "results_markdown": "\n".join(markdown_lines),
+                },
+            )
+        except Exception as e:
+            logger.exception("Unexpected directions error")
+            await self.event_error(e)
+            return build_tool_response(
+                status="error",
+                message="Turn-by-turn directions failed due to an internal error.",
+                query=query_payload,
+            )
+
+
+def _track(tool_name: str):
+    """Decorator: increment per-tool call/error counters for operational health."""
+
+    def _decorator(fn):
+        @functools.wraps(fn)
+        async def _async_wrapper(*args, **kwargs):
+            record_tool_call(tool_name)
+            try:
+                return await fn(*args, **kwargs)
+            except Exception:
+                record_tool_call(tool_name, error=True)
+                raise
+
+        @functools.wraps(fn)
+        def _sync_wrapper(*args, **kwargs):
+            record_tool_call(tool_name)
+            try:
+                return fn(*args, **kwargs)
+            except Exception:
+                record_tool_call(tool_name, error=True)
+                raise
+
+        if inspect.iscoroutinefunction(fn):
+            return _async_wrapper
+        return _sync_wrapper
+
+    return _decorator
+
+
+@_track("osm_find_address")
 @mcp.tool("osm_find_address")
 async def find_address_for_coordinates(
      latitude: Annotated[
@@ -2676,13 +3098,57 @@ async def find_address_for_coordinates(
     """
     Reverse-geocode coordinates to likely places or addresses.
 
+    Uses Nominatim's dedicated `/reverse` endpoint (more accurate and cheaper
+    than formatting the coordinates into a free-text search).
+
     Use when the user already has exact GPS coordinates and wants to know
     what exists at that location.
     """
-    ctx.info(f"[OSM] Resolving [{latitude}, {longitude}] to address.")
-    return await find_specific_place(
-        f"{latitude}, {longitude}", ctx)
+    ctx.info(f"Resolving [{latitude}, {longitude}] to address.")
+    searcher = OsmSearcher(valves, user_valves)
+    response_mode = normalize_response_mode(valves.response_mode, RESPONSE_MODE_COMPACT)
+    query_payload = {
+        "latitude": float(latitude),
+        "longitude": float(longitude),
+        "response_mode": response_mode,
+    }
+    try:
+        result = await searcher.nominatim_reverse(latitude, longitude)
+    except ValueError as exc:
+        logger.warning("Reverse geocoding config error: %s", exc)
+        return build_tool_response(
+            status="config_error",
+            message=VALVES_NOT_SET,
+            query=query_payload,
+            include_untrusted_warning=False,
+        )
 
+    if not result:
+        return build_tool_response(
+            status="no_results",
+            message=NO_RESULTS,
+            query=query_payload,
+        )
+
+    items = build_result_items([result], use_distance=False)
+    results_md = convert_and_validate_results(
+        f"{latitude}, {longitude}",
+        [result],
+        sort_message="reverse_geocode",
+        use_distance=False,
+        response_mode=response_mode,
+    )
+    return build_tool_response(
+        status="ok",
+        message=f"Found {len(items)} result(s).",
+        query=query_payload,
+        data={
+            "results_markdown": results_md or "# Search Results\n\nNo normalized results available.",
+            "items": items,
+        },
+    )
+
+@_track("osm_find_nearby_store")
 @mcp.tool("osm_find_nearby_store")
 async def find_store_or_place_near_coordinates(
     store_or_business_name: Annotated[
@@ -2722,6 +3188,7 @@ async def find_store_or_place_near_coordinates(
     query = f"{store_or_business_name} {latitude},{longitude}"
     return await find_specific_place(query, ctx)
 
+@_track("osm_find_place")
 @mcp.tool("osm_find_place")
 async def find_specific_place(
      address_or_place: Annotated[
@@ -2753,6 +3220,7 @@ async def find_specific_place(
     return await find_specific_place_impl(address_or_place, response_mode=response_mode)
 
 
+@_track("osm_find_place_detailed")
 @mcp.tool("osm_find_place_detailed")
 async def find_specific_place_detailed(
      address_or_place: Annotated[
@@ -2782,6 +3250,95 @@ async def find_specific_place_detailed(
     ctx.info(f"[OSM] Searching for detailed info on [{address_or_place}].")
     return await find_specific_place_impl(address_or_place, response_mode=RESPONSE_MODE_DETAILED)
 
+
+@_track("osm_geocode")
+@mcp.tool("osm_geocode")
+async def geocode_place(
+    place: Annotated[
+        str,
+        Field(
+            description=(
+                "Free-text place/address query (include city/country when ambiguous). "
+                "Returns coordinates only — no full address details."
+            )
+        ),
+    ],
+    limit: Annotated[int, Field(description="Maximum number of coordinate candidates to return.", ge=1, le=10)] = 1,
+) -> Annotated[
+    str,
+    Field(
+        description=(
+            "JSON string response with keys: status, message, query, data, warnings. "
+            "Data contains ordered coordinate candidates (lat/lon, name, type, importance)."
+        )
+    ),
+]:
+    """
+    Convert a place/address into GPS coordinates.
+
+    Use when the agent only needs lat/lon (e.g. for map display, distance
+    calculations, or anchoring further queries). For full address details use
+    ``osm_find_place`` instead.
+    """
+    searcher = OsmSearcher(valves, user_valves)
+    query_payload = {
+        "place": sanitize_external_text(place, max_length=220),
+        "limit": int(limit),
+    }
+    try:
+        result = await searcher.nominatim_search(place, limit=limit)
+    except ValueError as exc:
+        logger.warning("Geocode config error: %s", exc)
+        return build_tool_response(
+            status="config_error",
+            message=VALVES_NOT_SET,
+            query=query_payload,
+            include_untrusted_warning=False,
+        )
+
+    if not result:
+        return build_tool_response(
+            status="no_results",
+            message=NO_RESULTS,
+            query=query_payload,
+        )
+
+    candidates: list[dict[str, object]] = []
+    for item in result:
+        try:
+            lat = float(item.get("lat"))
+            lon = float(item.get("lon"))
+        except (TypeError, ValueError):
+            continue
+        candidates.append(
+            {
+                "name": sanitize_external_text(item.get("display_name") or item.get("name") or "", max_length=240),
+                "lat": round(lat, 7),
+                "lon": round(lon, 7),
+                "type": sanitize_external_text(str(item.get("type") or item.get("class") or ""), max_length=80),
+                "importance": float(item.get("importance") or 0.0),
+                "osm_id": item.get("osm_id"),
+                "osm_type": item.get("osm_type"),
+                "map_url": create_osm_link(lat, lon),
+            }
+        )
+
+    if not candidates:
+        return build_tool_response(
+            status="no_results",
+            message=NO_RESULTS,
+            query=query_payload,
+        )
+
+    return build_tool_response(
+        status="ok",
+        message=f"Found {len(candidates)} coordinate candidate(s).",
+        query=query_payload,
+        data={"candidates": candidates, "primary": candidates[0]},
+    )
+
+
+@_track("osm_navigate")
 @mcp.tool("osm_navigate")
 async def navigate_between_places(
     start_address_or_place: Annotated[
@@ -2807,8 +3364,10 @@ async def navigate_between_places(
     Use when the user asks for routing or travel estimation between two places.
     Returns summary plus route steps in sanitized text.
     """
-    print(
-        f"[OSM] Navigating from [{start_address_or_place}] to [{destination_address_or_place}]."
+    logger.info(
+        "Navigating from [%s] to [%s].",
+        start_address_or_place,
+        destination_address_or_place,
     )
     navigator = OsmNavigator(valves, user_valves)
     return await navigator.navigate(
@@ -2816,6 +3375,42 @@ async def navigate_between_places(
     )
 
 
+@_track("osm_directions")
+@mcp.tool("osm_directions")
+async def turn_by_turn_directions(
+    start_address_or_place: Annotated[
+        str,
+        Field(description="Start address/place/coordinates (include city/country when ambiguous)."),
+    ],
+    destination_address_or_place: Annotated[
+        str,
+        Field(description="Destination address/place/coordinates (include city/country when ambiguous)."),
+    ],
+) -> Annotated[
+    str,
+    Field(
+        description=(
+            "JSON string response with turn-by-turn directions. "
+            "Data contains an ordered list of steps with instruction, distance, "
+            "and duration. Best when the agent needs to walk the user through "
+            "each maneuver."
+        )
+    ),
+]:
+    """
+    Return ordered turn-by-turn directions between two places.
+
+    Use when the user explicitly wants step-by-step instructions rather than
+    a route summary. Returns a structured list of steps with distance and
+    duration estimates, plus the summary block.
+    """
+    navigator = OsmNavigator(valves, user_valves)
+    return await navigator.directions(
+        start_address_or_place, destination_address_or_place
+    )
+
+
+@_track("osm_find_nearby")
 @mcp.tool("osm_find_nearby")
 async def find_places_near_place(
       place: Annotated[
@@ -2856,6 +3451,7 @@ async def find_places_near_place(
     )
 
 
+@_track("osm_find_nearby_detailed")
 @mcp.tool("osm_find_nearby_detailed")
 async def find_places_near_place_detailed(
       place: Annotated[
@@ -2895,151 +3491,71 @@ async def find_places_near_place_detailed(
         radius=radius,
     )
 
-@mcp.tool("osm_find_groceries")
-async def find_grocery_stores_near_place(
-     place: Annotated[str, Field(description="The name of a place, an address, or GPS coordinates. City and country must be specified, if known.")]) -> Annotated[str, Field(description="A list of nearby grocery stores or supermarkets, if found.")]:
-    """Backward-compatible alias for groceries category."""
-    return await search_category_near_place(place=place, category="groceries")
+# Backward-compatible per-category aliases. Each entry maps a stable tool
+# name (e.g. "osm_find_groceries") to (category_key, result description).
+# They are registered dynamically below to keep the source compact and the
+# tool list consistent.
+LEGACY_CATEGORY_ALIASES: dict[str, tuple[str, str]] = {
+    "osm_find_groceries": ("groceries", "A list of nearby grocery stores or supermarkets, if found."),
+    "osm_find_bakeries": ("bakeries", "A list of nearby bakeries, if found."),
+    "osm_find_food": ("food", "A list of nearby restaurants, eateries, etc, if found."),
+    "osm_find_swimming": ("swimming", "A list of swimming pools or places, if found."),
+    "osm_find_playgrounds": ("playgrounds", "A list of recreational places, if found."),
+    "osm_find_recreation": ("recreation", "A list of recreational places, if found."),
+    "osm_find_attractions": ("tourist_attractions", "A list of tourist attractions, if found."),
+    "osm_find_worship": ("places_of_worship", "A list of nearby places of worship, if found."),
+    "osm_find_accommodation": ("accommodation", "A list of nearby accommodation, if found."),
+    "osm_find_alcohol": ("alcohol", "A list of nearby alcohol shops, if found."),
+    "osm_find_drugs": ("drugs", "A list of nearby cannabis and smart shops, if found."),
+    "osm_find_schools": ("schools", "A list of nearby schools, if found."),
+    "osm_find_universities": ("universities", "A list of nearby universities, if found."),
+    "osm_find_libraries": ("libraries", "A list of nearby libraries, if found."),
+    "osm_find_transport": ("public_transport", "A list of nearby public transportation stops, if found."),
+    "osm_find_bikes": ("bike_rentals", "A list of nearby bike rentals, if found."),
+    "osm_find_cars": ("car_rentals", "A list of nearby car rentals, if found."),
+    "osm_find_hardware": ("hardware", "A list of nearby hardware/DIY stores, if found."),
+    "osm_find_electrical": ("electrical", "A list of nearby electrical/lighting stores, if found."),
+    "osm_find_electronics": ("electronics", "A list of nearby consumer electronics stores, if found."),
+    "osm_find_doctors": ("doctors", "A list of nearby doctors, if found."),
+    "osm_find_hospitals": ("hospitals", "A list of nearby hospitals, if found."),
+    "osm_find_pharmacy": ("pharmacies", "A list of nearby pharmacies, if found."),
+}
 
-@mcp.tool("osm_find_bakeries")
-async def find_bakeries_near_place(
-      place: Annotated[str, Field(description="The name of a place, an address, or GPS coordinates. City and country must be specified, if known.")]) -> Annotated[str, Field(description="A list of nearby bakeries, if found.")]:
-    """Backward-compatible alias for bakeries category."""
-    return await search_category_near_place(place=place, category="bakeries")
+_LEGACY_ALIAS_DESCRIPTION = (
+    "The name of a place, an address, or GPS coordinates. "
+    "City and country must be specified, if known."
+)
 
-@mcp.tool("osm_find_food")
-async def find_food_near_place(
-      place: Annotated[str, Field(description="The name of a place, an address, or GPS coordinates. City and country must be specified, if known.")]) -> Annotated[str, Field(description="A list of nearby restaurants, eateries, etc, if found.")]:
-    """Backward-compatible alias for food category."""
-    return await search_category_near_place(place=place, category="food")
+if valves.expose_legacy_aliases:
+    for _tool_name, (_category_key, _result_desc) in LEGACY_CATEGORY_ALIASES.items():
 
-@mcp.tool("osm_find_swimming")
-async def find_swimming_near_place(
-      place: Annotated[str, Field(description="The name of a place, an address, or GPS coordinates. City and country must be specified, if known.")]) -> Annotated[str, Field(description="A list of swimming pools or places, if found.")]:
-    """Backward-compatible alias for swimming category."""
-    return await search_category_near_place(place=place, category="swimming")
+        async def _alias_handler(
+            place: Annotated[
+                str,
+                Field(description=_LEGACY_ALIAS_DESCRIPTION),
+            ],
+            category_key: str = _category_key,
+        ) -> Annotated[str, Field(description=_result_desc)]:
+            """Backward-compatible alias delegating to search_category_near_place."""
+            record_tool_call(_tool_name)
+            return await search_category_near_place(place=place, category=category_key)
 
-@mcp.tool("osm_find_playgrounds")
-async def find_playgrounds_near_place(
-      place: Annotated[str, Field(description="The name of a place, an address, or GPS coordinates. City and country must be specified, if known.")]) -> Annotated[str, Field(description="A list of recreational places, if found.")]:
-    """Backward-compatible alias for playgrounds category."""
-    return await search_category_near_place(place=place, category="playgrounds")
-
-@mcp.tool("osm_find_recreation")
-async def find_recreation_near_place(
-      place: Annotated[str, Field(description="The name of a place, an address, or GPS coordinates. City and country must be specified, if known.")]) -> Annotated[str, Field(description="A list of recreational places, if found.")]:
-    """Backward-compatible alias for recreation category."""
-    return await search_category_near_place(place=place, category="recreation")
-
-@mcp.tool("osm_find_attractions")
-async def find_tourist_attractions_near_place(
-      place: Annotated[str, Field(description="The name of a place, an address, or GPS coordinates. City and country must be specified, if known.")]) -> Annotated[str, Field(description="A list of tourist attractions, if found.")]:
-    """Backward-compatible alias for tourist attractions category."""
-    return await search_category_near_place(place=place, category="tourist_attractions")
-
-@mcp.tool("osm_find_worship")
-async def find_place_of_worship_near_place(
-      place: Annotated[str, Field(description="The name of a place, an address, or GPS coordinates. City and country must be specified, if known.")]) -> Annotated[str, Field(description="A list of nearby places of worship, if found.")]:
-    """Backward-compatible alias for places of worship category."""
-    return await search_category_near_place(place=place, category="places_of_worship")
-
-@mcp.tool("osm_find_accommodation")
-async def find_accommodation_near_place(
-      place: Annotated[str, Field(description="The name of a place, an address, or GPS coordinates. City and country must be specified, if known.")]) -> Annotated[str, Field(description="A list of nearby accommodation, if found.")]:
-    """Backward-compatible alias for accommodation category."""
-    return await search_category_near_place(place=place, category="accommodation")
-
-@mcp.tool("osm_find_alcohol")
-async def find_alcohol_near_place(
-      place: Annotated[str, Field(description="The name of a place, an address, or GPS coordinates. City and country must be specified, if known.")]) -> Annotated[str, Field(description="A list of nearby alcohol shops, if found.")]:
-    """Backward-compatible alias for alcohol category."""
-    return await search_category_near_place(place=place, category="alcohol")
-
-@mcp.tool("osm_find_drugs")
-async def find_drugs_near_place(
-      place: Annotated[str, Field(description="The name of a place, an address, or GPS coordinates. City and country must be specified, if known.")]) -> Annotated[str, Field(description="A list of nearby cannabis and smart shops, if found.")]:
-    """Backward-compatible alias for drugs category."""
-    return await search_category_near_place(place=place, category="drugs")
-
-@mcp.tool("osm_find_schools")
-async def find_schools_near_place(
-      place: Annotated[str, Field(description="The name of a place, an address, or GPS coordinates. City and country must be specified, if known.")]) -> Annotated[str, Field(description="A list of nearby schools, if found.")]:
-    """Backward-compatible alias for schools category."""
-    return await search_category_near_place(place=place, category="schools")
-
-@mcp.tool("osm_find_universities")
-async def find_universities_near_place(
-      place: Annotated[str, Field(description="The name of a place, an address, or GPS coordinates. City and country must be specified, if known.")]) -> Annotated[str, Field(description="A list of nearby schools, if found.")]:
-    """Backward-compatible alias for universities category."""
-    return await search_category_near_place(place=place, category="universities")
-
-@mcp.tool("osm_find_libraries")
-async def find_libraries_near_place(
-      place: Annotated[str, Field(description="The name of a place, an address, or GPS coordinates. City and country must be specified, if known.")]) -> Annotated[str, Field(description="A list of nearby libraries, if found.")]:
-    """Backward-compatible alias for libraries category."""
-    return await search_category_near_place(place=place, category="libraries")
-
-@mcp.tool("osm_find_transport")
-async def find_public_transport_near_place(
-      place: Annotated[str, Field(description="The name of a place, an address, or GPS coordinates. City and country must be specified, if known.")]) -> Annotated[str, Field(description="A list of nearby public transportation stops, if found.")]:
-    """Backward-compatible alias for public transport category."""
-    return await search_category_near_place(place=place, category="public_transport")
-
-@mcp.tool("osm_find_bikes")
-async def find_bike_rentals_near_place(
-      place: Annotated[str, Field(description="The name of a place, an address, or GPS coordinates. City and country must be specified, if known.")]) -> Annotated[str, Field(description="A list of nearby bike rentals, if found.")]:
-    """Backward-compatible alias for bike rentals category."""
-    return await search_category_near_place(place=place, category="bike_rentals")
-
-@mcp.tool("osm_find_cars")
-async def find_car_rentals_near_place(
-      place: Annotated[str, Field(description="The name of a place, an address, or GPS coordinates. City and country must be specified, if known.")]) -> Annotated[str, Field(description="A list of nearby car rentals, if found.")]:
-    """Backward-compatible alias for car rentals category."""
-    return await search_category_near_place(place=place, category="car_rentals")
-
-@mcp.tool("osm_find_hardware")
-async def find_hardware_store_near_place(
-      place: Annotated[str, Field(description="The name of a place, an address, or GPS coordinates. City and country must be specified, if known.")]) -> Annotated[str, Field(description="A list of nearby hardware/DIY stores, if found.")]:
-    """Backward-compatible alias for hardware category."""
-    return await search_category_near_place(place=place, category="hardware")
-
-@mcp.tool("osm_find_electrical")
-async def find_electrical_store_near_place(
-      place: Annotated[str, Field(description="The name of a place, an address, or GPS coordinates. City and country must be specified, if known.")]) -> Annotated[str, Field(description="A list of nearby electrical/lighting stores, if found.")]:
-    """Backward-compatible alias for electrical category."""
-    return await search_category_near_place(place=place, category="electrical")
-
-@mcp.tool("osm_find_electronics")
-async def find_electronics_store_near_place(
-      place: Annotated[str, Field(description="The name of a place, an address, or GPS coordinates. City and country must be specified, if known.")]) -> Annotated[str, Field(description="A list of nearby electronics stores, if found.")]:
-    """Backward-compatible alias for electronics category."""
-    return await search_category_near_place(place=place, category="electronics")
-
-@mcp.tool("osm_find_doctors")
-async def find_doctor_near_place(
-      place: Annotated[str, Field(description="The name of a place, an address, or GPS coordinates. City and country must be specified, if known.")]) -> Annotated[str, Field(description="A list of nearby doctors, if found.")]:
-    """Backward-compatible alias for doctors category."""
-    return await search_category_near_place(place=place, category="doctors")
-
-@mcp.tool("osm_find_hospitals")
-async def find_hospital_near_place(
-      place: Annotated[str, Field(description="The name of a place, an address, or GPS coordinates. City and country must be specified, if known.")]) -> Annotated[str, Field(description="A list of nearby hospitals, if found.")]:
-    """Backward-compatible alias for hospitals category."""
-    return await search_category_near_place(place=place, category="hospitals")
-
-@mcp.tool("osm_find_pharmacy")
-async def find_pharmacy_near_place(
-      place: Annotated[str, Field(description="The name of a place, an address, or GPS coordinates. City and country must be specified, if known.")]) -> Annotated[str, Field(description="A list of nearby pharmacies, if found.")]:
-    """Backward-compatible alias for pharmacies category."""
-    return await search_category_near_place(place=place, category="pharmacies")
+        _alias_handler.__name__ = f"find_{_category_key}_near_place_alias"
+        mcp.tool(_tool_name)(_alias_handler)
+else:
+    logger.info(
+        "Legacy category aliases disabled (OSM_EXPOSE_LEGACY_ALIASES=false); "
+        "use osm_find_nearby with the 'category' parameter instead."
+    )
 
 # This function exists to help catch situations where the user is
 # too generic in their query, or is looking for something the tool
 # does not yet support. By having the model pick this function, we
 # can direct it to report its capabilities and tell the user how
 # to use it. It's not perfect, but it works sometimes.
+@_track("osm_find_other")
 @mcp.tool("osm_find_other")
-def find_other_things_near_place(
+async def find_other_things_near_place(
     place: Annotated[
         str,
         Field(description="Place/address/coordinates to evaluate category support against."),
@@ -3064,7 +3580,7 @@ def find_other_things_near_place(
     whether the category is available and points the agent to the canonical
     generic nearby-search tool.
     """
-    print(f"[OSM] Generic catch handler called with {category}")
+    logger.debug("Generic catch handler called with %s", category)
     resolved = resolve_poi_category_key(category)
     if resolved is not None:
         return build_tool_response(
@@ -3093,6 +3609,7 @@ def find_other_things_near_place(
     return resp
 
 
+@_track("osm_get_security_metrics")
 @mcp.tool("osm_get_security_metrics")
 def get_security_metrics() -> Annotated[
     str,
@@ -3109,6 +3626,7 @@ def get_security_metrics() -> Annotated[
     This tool is read-only and exposes aggregated counts of blocked/failed
     security-relevant events (auth, URL policy, cache path, upstream failures).
     """
+    record_tool_call("osm_get_security_metrics")
     return build_tool_response(
         status="ok",
         message="Security metrics snapshot.",
@@ -3117,10 +3635,80 @@ def get_security_metrics() -> Annotated[
     )
 
 
+@_track("osm_get_version")
+@mcp.tool("osm_get_version")
+def get_version() -> Annotated[
+    str,
+    Field(
+        description=(
+            "JSON string with server version and process start timestamp. "
+            "Intended for deployment auditing."
+        )
+    ),
+]:
+    """
+    Return server version metadata.
+
+    Read-only. Reports the package version, server name, and process start
+    timestamp (ISO 8601). Useful for confirming deployments match expectations.
+    """
+    started_iso = (
+        datetime.fromtimestamp(_SERVER_START_TS, tz=timezone.utc).isoformat()
+    )
+    return build_tool_response(
+        status="ok",
+        message="Version snapshot.",
+        data={
+            "server": SERVER_NAME,
+            "version": SERVER_VERSION,
+            "started_at": started_iso,
+            "python": sys.version.split()[0],
+        },
+        include_untrusted_warning=False,
+    )
+
+
+@_track("osm_get_health")
+@mcp.tool("osm_get_health")
+def get_health() -> Annotated[
+    str,
+    Field(
+        description=(
+            "JSON string with operational health: uptime, per-tool call/error "
+            "counters, last upstream failure, and cache path."
+        )
+    ),
+]:
+    """
+    Return an operational health snapshot.
+
+    Read-only. Reports uptime, per-tool call/error counts, the most recent
+    upstream failure (kind/message/timestamp), and the active cache path.
+    Designed for orchestrators and on-call triage.
+    """
+    snapshot = get_operational_snapshot()
+    snapshot["cache_file"] = valves.cache_file
+    return build_tool_response(
+        status="ok",
+        message="Operational health snapshot.",
+        data=snapshot,
+        include_untrusted_warning=False,
+    )
+
+
+@_track("osm_get_status")
 @mcp.tool("osm_get_status")
-def get_status() -> str:
+def get_status() -> Annotated[
+    str,
+    Field(
+        description=(
+            "Short, human-readable server status string. "
+            "Prefer osm_get_health for structured data."
+        )
+    ),
+]:
     """Check the operational status of the OSM server."""
-    return f"Percival OSM Server operational. Cache: {valves.cache_file}"
+    return f"Percival OSM Server operational. Version: {SERVER_VERSION}. Cache: {valves.cache_file}"
 
 
 async def run_server(
@@ -3228,4 +3816,6 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    main()
+    main()
     main()

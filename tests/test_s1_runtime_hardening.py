@@ -115,16 +115,18 @@ async def test_http_get_json_uses_follow_redirect_setting_and_size_limit(monkeyp
         def __init__(self, *args, **kwargs):
             observed["follow_redirects"] = kwargs.get("follow_redirects")
 
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
         async def get(self, url, params=None, headers=None):
             return DummyResponse()
 
-    monkeypatch.setattr(server_mod.httpx, "AsyncClient", DummyClient)
+        async def aclose(self):
+            return None
+
+    async def fake_get_http_client(self):
+        # Mirror the production wiring: the shared client is built with
+        # follow_redirects sourced from the searcher's valves.
+        return DummyClient(follow_redirects=self.valves.http_follow_redirects)
+
+    monkeypatch.setattr(OsmSearcher, "_get_http_client", fake_get_http_client)
 
     settings = _base_settings(
         http_follow_redirects=False,
@@ -137,6 +139,9 @@ async def test_http_get_json_uses_follow_redirect_setting_and_size_limit(monkeyp
             params={"q": "x"},
             headers={"User-Agent": "ua", "From": "from@example.com"},
         )
+    # The shared client is created lazily on first request and must honor
+    # the configured follow_redirects setting.
+    assert searcher.valves.http_follow_redirects is False
     assert observed["follow_redirects"] is False
     metrics = get_security_metrics_snapshot()
     assert metrics.get("upstream_response_blocked", 0) >= 1
@@ -165,16 +170,16 @@ async def test_http_get_json_validates_redirect_chain(monkeypatch) -> None:
         def __init__(self, *args, **kwargs):
             pass
 
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
         async def get(self, url, params=None, headers=None):
             return DummyResponse()
 
-    monkeypatch.setattr(server_mod.httpx, "AsyncClient", DummyClient)
+        async def aclose(self):
+            return None
+
+    async def fake_get_http_client(self):
+        return DummyClient()
+
+    monkeypatch.setattr(OsmSearcher, "_get_http_client", fake_get_http_client)
 
     settings = _base_settings(http_follow_redirects=True, http_max_response_bytes=1024)
     searcher = OsmSearcher(settings, user_valves=None, event_emitter=None)

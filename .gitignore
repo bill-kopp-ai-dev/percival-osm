@@ -4,10 +4,30 @@ __pycache__/
 build/
 dist/
 wheels/
-*.egg-info
+*.egg-info/
 
 # Virtual environments
 .venv
 
 # Caches
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local environment configuration (contains secrets like ORS_API_KEY)
+.env
+.env.*
+!.env.example
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Security tooling artifacts
+.bandit-report.*.json
+
+# Coverage
+.coverage
+htmlcov/
