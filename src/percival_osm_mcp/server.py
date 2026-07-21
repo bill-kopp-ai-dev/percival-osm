@@ -40,8 +40,11 @@ from .osm_primitives import register_all_primitives
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
-        env_file_encoding="utf-8",
+        # Secrets and runtime overrides are injected by the launcher (the
+        # nanobot MCP config sets them under `mcpServers.*.env`). We do
+        # NOT load a `.env` file here because (a) it makes the CWD of the
+        # server load-bearing, and (b) secrets on disk are an unnecessary
+        # leak surface. Add new keys below as plain env-var-only fields.
         case_sensitive=False,
         extra="ignore",
     )
@@ -61,6 +64,13 @@ class Settings(BaseSettings):
     ors_api_key: Optional[str] = Field(
         default=None,
         validation_alias=AliasChoices("ors_api_key", "ORS_API_KEY"),
+    )
+    ors_request_timeout: int = Field(
+        default=90,
+        validation_alias=AliasChoices(
+            "ors_request_timeout",
+            "ORS_REQUEST_TIMEOUT",
+        ),
     )
     user_agent: str = Field(
         default="",
@@ -1589,6 +1599,7 @@ class OrsRouter:
             self._client = openrouteservice.Client(
                 base_url=ors_instance,
                 key=ors_api_key,
+                timeout=self.valves.ors_request_timeout,
             )
         else:
             # ORS calls generally need an API key; keep None to preserve previous behavior.

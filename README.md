@@ -1,6 +1,6 @@
 # 🤖 Percival OSM — percival.OS MCP
 
-**Version 0.4.0**
+**Version 0.4.1**
 
 [![Python](https://img.shields.io/badge/python-3.11+-yellow.svg)]()
 [![MCP](https://img.shields.io/badge/mcp-server-blue.svg)]()
@@ -123,6 +123,22 @@ tokens unless the agent explicitly asks for them.
 
 ## ⚙️ Configuration
 
+### Configuration model (since 0.4.1)
+
+> The server reads **all** of its configuration from the **process
+> environment**. It does **not** load a `.env` file from disk anymore —
+> the previous `env_file=".env"` behaviour has been removed.
+>
+> Practical consequences:
+> - No more `cwd` requirement: the server can be launched from any
+>   directory; it no longer matters where you start it from.
+> - Secrets never sit on disk under the package: the launcher is the only
+>   component that needs to inject them, and the recommended path
+>   (`mcpServers.*.env` in the agent's config) keeps them out of version
+>   control.
+> - The shipped `.env.example` is **documentation only** — it lists every
+>   environment variable the server understands, but nothing reads it.
+
 ### Recommended femtobot / nanobot registration
 
 ```json
@@ -130,13 +146,12 @@ tokens unless the agent explicitly asks for them.
   "tools": {
     "mcpServers": {
       "percival-osm": {
-        "command": "/path/to/.venv/bin/python",
-        "args": ["-m", "percival_osm_mcp"],
-        "cwd": "/path/to/percival-osm",
+        "command": "percival-osm-mcp",
+        "args": ["--mode", "stdio"],
         "env": {
-          "user_agent": "percival-osm/1.0 (your-email@example.com)",
-          "from_header": "your-email@example.com",
-          "ORS_API_KEY": "your-openrouteservice-key",
+          "USER_AGENT": "percival-osm/0.4.1 (you@example.com)",
+          "FROM_HEADER": "you@example.com",
+          "ORS_API_KEY": "${OPENROUTESERVICE_API_KEY}",
           "OSM_RESPONSE_MODE": "compact"
         },
         "enabledTools": [
@@ -155,19 +170,17 @@ tokens unless the agent explicitly asks for them.
 }
 ```
 
-### Important notes on `cwd`
-
-> The server loads its `pydantic-settings` from a `.env` file **relative to
-> the current working directory**. Always set `cwd` to the `percival-osm`
-> package directory — without it, the spawned process inherits femtobot's
-> CWD and `.env` will not be loaded.
-
-Prefer passing secrets via the `env` block instead of `.env` when running
-under femtobot — `.env` is intentionally excluded from version control.
+In the snippet above, `${OPENROUTESERVICE_API_KEY}` is expanded by the
+launcher from the agent's own `.env` (or your shell). For the
+percival.OS test environment, the wrapper script auto-sources
+`.nanobot-test/.env` and verifies every `${VAR}` placeholder is set
+before launching the agent — so a missing key aborts with a clear error
+instead of a silent failure.
 
 ### Configuration flags
 
-See [`.env.example`](./.env.example) for the full list. Highlights:
+See [`.env.example`](./.env.example) for the canonical list (every
+variable the server recognises, with its default). Highlights:
 
 ```bash
 # Behavior
@@ -175,6 +188,15 @@ OSM_EXPOSE_LEGACY_ALIASES=true          # set false for a slim tool list
 OSM_NOMINATIM_RATE_LIMIT_RPS=1.0        # respect Nominatim usage policy
 OSM_NOMINATIM_RATE_LIMIT_BURST=2        # small burst above the average
 OSM_RESPONSE_MODE=compact               # compact | detailed
+
+# Nominatim usage policy — both must be non-empty
+USER_AGENT=percival-osm/0.4.1 (you@example.com)
+FROM_HEADER=you@example.com
+
+# OpenRouteService routing (optional; without it, routing falls back to
+# haversine distance which is less accurate)
+ORS_API_KEY=...
+ORS_REQUEST_TIMEOUT=90                  # default 90s (lib default is 60s)
 
 # Logging (stderr only — stdout is reserved for MCP JSON-RPC)
 OSM_LOG_FORMAT=plain                    # plain | json
@@ -270,7 +292,7 @@ PYTHONPATH=src .venv/bin/python -m percival_osm_mcp --mode streamable-http --por
 ### Tests
 
 ```bash
-# Run the full suite (45 tests, ~1s)
+# Run the full suite (45 tests, <1s)
 uv run pytest -v
 
 # Targeted suites
@@ -317,7 +339,22 @@ Every blocking or failure path increments a counter exposed via
 
 ## 📝 Changelog
 
-### 0.4.0 — current
+### 0.4.1 — current
+- **Security**: removed `env_file=".env"` from `Settings`. The server no
+  longer reads secrets from disk; all configuration comes from the
+  process environment. Eliminates the on-disk secret leak surface and
+  removes the `cwd`-dependent behaviour that forced callers to point
+  `cwd` at the package directory.
+- **Reliability**: added `ORS_REQUEST_TIMEOUT` (default `90`) so the
+  OpenRouteService client is constructed with an explicit `timeout=`,
+  raising it above the `openrouteservice` library default of 60s.
+  Public-instance traffic at peak hours no longer trips false
+  `openrouteservice.exceptions.Timeout` on valid routes.
+- **DX**: `percival-osm/.env` removed (gitignored template is now
+  documentation only); README updated to drop the `cwd` requirement
+  and call out the new env-only model.
+
+### 0.4.0
 - 3 prompt primitives + 2 resource primitives (`osm_primitives.py`).
 - `osm_directions` (structured turn-by-turn, ordered steps with
   distance/duration) and `osm_geocode` (text → coords, no full address
