@@ -1,25 +1,63 @@
+# Python
 .venv
+__pycache__
+*.py[oc]
+build
+dist
+wheels
+*.egg-info
+
+# Git / IDE / OS
 .git
 .gitignore
+.gitattributes
 .github
-.env
-.env.*
-!.env.example
+.vscode
+.idea
+.DS_Store
+*.swp
+
+# Python tool caches
 .pytest_cache
 .mypy_cache
 .ruff_cache
 .coverage
 htmlcov
+
+# Local config (NEVER bake secrets into the image)
+.env
+.env.*
+!.env.example
+
+# Tests + tooling output (image is for runtime, not test)
 tests
-docs
 .bandit
 .bandit-report.*.json
-__pycache__
-*.py[oc]
-.vscode
-.idea
-.DS_Store
+
+# Positronic project metadata
+.positronic
+AGENTS.md
+# Allow ``docs/security/nanobot-policy.md`` to be copied into the image
+# — the resource is read at runtime by ``osm_primitives.py``. Block
+# everything else under docs/ by listing the sub-paths we don't ship.
+docs/README.md
+docs/*.md
+docs/integrations
+docs/development
+
+# Docker-specific — the catalog entry lives outside the image build
+servers
+docker-compose.yml
+docker-compose.*.yml
+
+# Markdown
 *.md
 !README.md
+
+# License
 LICENSE
-docker-compose.yml
+
+# GitHub metadata that may have been copied
+.editorconfig
+.prettierignore
+.eslintrc*

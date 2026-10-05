@@ -1,0 +1,102 @@
+# =============================================================================
+# percival-osm — Docker MCP Catalog entry
+# =============================================================================
+#
+# This file follows the format consumed by ``docker mcp catalog import`` and
+# the official ``docker/mcp-registry`` submission process. When this server
+# is accepted into the registry, Docker Hub will rebuild the image under
+# the ``mcp/percival-osm`` namespace with cryptographic signatures,
+# provenance, and SBOMs attached.
+#
+# Local development / self-hosting workflow:
+#   docker build -t percival-osm:local .
+#   docker compose up -d        # stdio transport
+#   docker compose --profile http up -d   # streamable-http transport
+#
+# Reference docs:
+#   https://docs.docker.com/ai/mcp-catalog-and-toolkit/catalog/
+#   https://github.com/docker/mcp-registry/blob/main/CONTRIBUTING.md
+# =============================================================================
+
+name: percival-osm
+image: mcp/percival-osm
+type: server
+meta:
+  category: geospatial
+  tags:
+    - openstreetmap
+    - osm
+    - maps
+    - navigation
+    - routing
+    - geospatial
+    - privacy
+about:
+  title: Percival OSM
+  description: >-
+    Hardened OpenStreetMap MCP bridge — real-time geospatial queries,
+    POI discovery, and turn-by-turn navigation through open OSM and
+    OpenRouteService APIs, with strict privacy controls and a
+    zero-tracking posture. Part of the percival.OS ecosystem.
+  icon: https://avatars.githubusercontent.com/u/214899409?s=200&v=4
+source:
+  project: https://github.com/bill-kopp-ai-dev/percival-osm
+  commit: 597d676
+  # When the upstream changes, bump this to the commit SHA of the release
+  # tag being imported into the catalog.
+config:
+  description: >-
+    Required identifiers for the OpenStreetMap Nominatim usage policy
+    (USER_AGENT, FROM_HEADER) and an optional OpenRouteService key for
+    higher-quality routing.
+  secrets:
+    - name: percival-osm.ors_api_key
+      env: ORS_API_KEY
+      example: YOUR_OPENROUTESERVICE_API_KEY
+  env:
+    - name: USER_AGENT
+      description: >-
+        Outgoing User-Agent header (required by the OSM Nominatim
+        usage policy). Use a string that identifies your deployment,
+        e.g. ``my-agent/1.0 (you@example.com)``.
+      example: my-agent/1.0 (you@example.com)
+      required: true
+    - name: FROM_HEADER
+      description: >-
+        Outgoing From header (required by the OSM Nominatim usage
+        policy). Operators must include a contact email.
+      example: you@example.com
+      required: true
+    - name: OSM_EXPOSE_LEGACY_ALIASES
+      description: >-
+        Whether to expose the 23 per-category legacy tool aliases
+        (default: true). Set to false to keep the canonical 14-tool
+        surface only.
+      example: "true"
+    - name: MCP_OSM_AUTH_TOKEN
+      description: >-
+        Bearer token required when the HTTP transport is bound to a
+        non-loopback host. Leave empty for stdio or loopback HTTP.
+      example: ""
+  parameters:
+    type: object
+    properties:
+      user_agent:
+        type: string
+        title: User-Agent
+        description: >-
+          Identifier sent to OSM Nominatim (Nominatim usage policy).
+      from_header:
+        type: string
+        title: From
+        description: >-
+          Contact header sent to OSM Nominatim (Nominatim usage policy).
+      ors_api_key:
+        type: string
+        title: OpenRouteService API key
+        description: >-
+          Optional. Routing tools fall back to haversine distance if
+          this is empty.
+    required:
+      - user_agent
+      - from_header

@@ -1,25 +1,100 @@
+# =============================================================================
+# percival-osm MCP server — docker-compose
+# =============================================================================
+#
+# Default service (mcp-osm-stdio) is configured for stdio transport. Connect
+# it from any MCP-compatible client (nanobot, opencode, claude-code, …) by
+# pointing the client at the running container — see the project README for
+# the exact ``mcpServers.percival-osm`` snippet.
+#
+# An optional ``mcp-osm-http`` profile exposes the streamable-http transport
+# for clients that prefer HTTP (the Docker MCP Toolkit, browser-based debug
+# tools, etc). Start it with:
+#
+#   docker compose --profile http up -d
+#
+# All settings come from environment variables. The .env.example file lists
+# every variable the server understands.
+# =============================================================================
+
+x-base-config: &base-config
+  build:
+    context: .
+    dockerfile: Dockerfile
+  image: percival-osm:local
+  restart: unless-stopped
+  pull_policy: build
+  user: "10001:10001"
+  read_only: true
+  tmpfs:
+    - /tmp:size=64m,mode=1777,noexec,nosuid,nodev
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  # CPU / memory caps follow the Docker MCP Toolkit defaults so this image
+  # runs without surprises when added to a profile.
+  deploy:
+    resources:
+      limits:
+        cpus: "1"
+        memory: 1G
+      reservations:
+        cpus: "0.25"
+        memory: 256M
+  environment:
+    OSM_CACHE_FILE: /cache/osm-cache.json
+    OSM_CACHE_ALLOWED_DIRS: /cache
+    OSM_LOG_FORMAT: ${OSM_LOG_FORMAT:-plain}
+    OSM_LOG_LEVEL: ${OSM_LOG_LEVEL:-INFO}
+    USER_AGENT: ${USER_AGENT:?USER_AGENT must be set (Nominatim usage policy)}
+    FROM_HEADER: ${FROM_HEADER:?FROM_HEADER must be set (Nominatim usage policy)}
+    ORS_API_KEY: ${ORS_API_KEY:-}
+    OSM_EXPOSE_LEGACY_ALIASES: ${OSM_EXPOSE_LEGACY_ALIASES:-true}
+    OSM_REQUIRE_HTTPS_UPSTREAMS: ${OSM_REQUIRE_HTTPS_UPSTREAMS:-true}
+    OSM_HTTP_FOLLOW_REDIRECTS: ${OSM_HTTP_FOLLOW_REDIRECTS:-false}
+    OSM_UPSTREAM_ALLOWED_HOSTS: ${OSM_UPSTREAM_ALLOWED_HOSTS:-nominatim.openstreetmap.org,overpass-api.de,api.openrouteservice.org}
+    OSM_NOMINATIM_RATE_LIMIT_RPS: ${OSM_NOMINATIM_RATE_LIMIT_RPS:-1.0}
+    OSM_NOMINATIM_RATE_LIMIT_BURST: ${OSM_NOMINATIM_RATE_LIMIT_BURST:-2}
+
 services:
+  # ---------------------------------------------------------------------------
+  # Default: stdio MCP transport. Designed to be wired into ``mcpServers.*.env``
+  # under any MCP client. The container is intended to be referenced by the
+  # launching client, not bound to host ports.
+  # ---------------------------------------------------------------------------
   mcp-osm:
-    container_name: mcp-osm
-    restart: unless-stopped
-    pull_policy: build
-    image: percival-osm:local
-    build:
-      context: .
-      network: host
+    container_name: percival-osm
+    <<: *base-config
+    command: ["stdio"]
+    volumes:
+      - percival-cache:/cache
+    # ``stdin_open`` + ``tty`` are required for the MCP client to talk to
+    # the container over stdio.
+    stdin_open: true
+    tty: true
+
+  # ---------------------------------------------------------------------------
+  # Optional HTTP transport for Docker MCP Toolkit, browser debug clients,
+  # and remote deployments. Enable with: ``--profile http``.
+  # ---------------------------------------------------------------------------
+  mcp-osm-http:
+    container_name: percival-osm-http
+    <<: *base-config
+    profiles: ["http"]
+    command: ["streamable-http"]
     ports:
-      - ${PORT}:${PORT}
-    user: "10001:10001"
+      # Map host PORT -> container 8080. The container always listens on
+      # 8080 (see Dockerfile) regardless of the host port.
+      - "${PORT:-8080}:8080"
     environment:
-      FASTMCP_PORT: ${PORT}
-    env_file: ${ENV_FILE}
-    read_only: true
-    tmpfs:
-      - /tmp
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    network_mode: ${NETWORK_MODE}
+      MODE: streamable-http
+      PORT: "8080"
+      ALLOW_REMOTE_HTTP: ${ALLOW_REMOTE_HTTP:-false}
+      MCP_OSM_AUTH_TOKEN: ${MCP_OSM_AUTH_TOKEN:-}
+    volumes:
+      - percival-cache:/cache
+
+volumes:
+  percival-cache:
+    driver: local

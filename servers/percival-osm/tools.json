@@ -1,0 +1,105 @@
+[
+  {
+    "name": "osm_find_nearby",
+    "description": "Find POIs of a category near a place, address, or coordinates. Returns a compact markdown list with distance and OSM link.",
+    "arguments": [
+      {"name": "place", "type": "string", "desc": "Place/address/coordinates to search around (include city/country when ambiguous)."},
+      {"name": "category", "type": "string", "desc": "POI category key (food, groceries, pharmacies, public_transport, …)."},
+      {"name": "limit", "type": "integer", "desc": "Maximum number of items to return (1..30)."},
+      {"name": "radius", "type": "integer", "desc": "Search radius in meters (200..50000)."}
+    ]
+  },
+  {
+    "name": "osm_find_nearby_detailed",
+    "description": "Detailed variant of osm_find_nearby with full address breakdown per result.",
+    "arguments": [
+      {"name": "place", "type": "string", "desc": "Place/address/coordinates to search around."},
+      {"name": "category", "type": "string", "desc": "POI category key."},
+      {"name": "limit", "type": "integer", "desc": "Maximum number of items to return (1..30)."},
+      {"name": "radius", "type": "integer", "desc": "Search radius in meters (200..50000)."}
+    ]
+  },
+  {
+    "name": "osm_find_place",
+    "description": "Resolve a specific named place, landmark, or address.",
+    "arguments": [
+      {"name": "address_or_place", "type": "string", "desc": "Address/place/landmark query (include city/country when possible)."}
+    ]
+  },
+  {
+    "name": "osm_find_place_detailed",
+    "description": "Detailed variant of osm_find_place with richer result context.",
+    "arguments": [
+      {"name": "address_or_place", "type": "string", "desc": "Address/place/landmark query."}
+    ]
+  },
+  {
+    "name": "osm_find_nearby_store",
+    "description": "Find a named store or business near a coordinate anchor.",
+    "arguments": [
+      {"name": "store_or_business_name", "type": "string", "desc": "Store/business/landmark name."},
+      {"name": "latitude", "type": "number", "desc": "Latitude of the search anchor (-90..90)."},
+      {"name": "longitude", "type": "number", "desc": "Longitude of the search anchor (-180..180)."}
+    ]
+  },
+  {
+    "name": "osm_find_address",
+    "description": "Reverse-geocode coordinates to likely places or addresses via Nominatim /reverse.",
+    "arguments": [
+      {"name": "latitude", "type": "number", "desc": "Latitude (-90..90)."},
+      {"name": "longitude", "type": "number", "desc": "Longitude (-180..180)."}
+    ]
+  },
+  {
+    "name": "osm_geocode",
+    "description": "Convert a place/address into GPS coordinates (no full address details).",
+    "arguments": [
+      {"name": "place", "type": "string", "desc": "Free-text place/address query."},
+      {"name": "limit", "type": "integer", "desc": "Maximum candidates to return (1..10)."}
+    ]
+  },
+  {
+    "name": "osm_navigate",
+    "description": "Route summary (distance + ETA + travel type) between two places.",
+    "arguments": [
+      {"name": "start_address_or_place", "type": "string", "desc": "Start address/place/coordinates."},
+      {"name": "destination_address_or_place", "type": "string", "desc": "Destination address/place/coordinates."}
+    ]
+  },
+  {
+    "name": "osm_directions",
+    "description": "Step-by-turn directions A -> B with ordered steps, distance, and duration.",
+    "arguments": [
+      {"name": "start_address_or_place", "type": "string", "desc": "Start address/place/coordinates."},
+      {"name": "destination_address_or_place", "type": "string", "desc": "Destination address/place/coordinates."}
+    ]
+  },
+  {
+    "name": "osm_get_health",
+    "description": "Operational health snapshot: uptime, per-tool call/error counters, last upstream failure, cache path.",
+    "arguments": []
+  },
+  {
+    "name": "osm_get_version",
+    "description": "Server version and process start timestamp.",
+    "arguments": []
+  },
+  {
+    "name": "osm_get_security_metrics",
+    "description": "In-memory security counter snapshot (URL policy blocks, auth failures, upstream failures, …).",
+    "arguments": []
+  },
+  {
+    "name": "osm_get_status",
+    "description": "Short human-readable server status string.",
+    "arguments": []
+  },
+  {
+    "name": "osm_find_other",
+    "description": "Category capability fallback — use when the requested category may not be in the canonical list.",
+    "arguments": [
+      {"name": "place", "type": "string", "desc": "Place/address/coordinates to evaluate."},
+      {"name": "category", "type": "string", "desc": "Requested category to validate against supported POI categories."}
+    ]
+  }
+]
