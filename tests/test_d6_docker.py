@@ -22,10 +22,12 @@ COMPOSE = REPO_ROOT / "docker-compose.yml"
 DOCKERIGNORE = REPO_ROOT / ".dockerignore"
 BUILD_SCRIPT = REPO_ROOT / "scripts" / "docker-build.sh"
 SMOKE_SCRIPT = REPO_ROOT / "scripts" / "docker-smoke-test.sh"
+INSPECT_SCRIPT = REPO_ROOT / "scripts" / "docker-inspect.sh"
 CATALOG_DIR = REPO_ROOT / "servers" / "percival-osm"
 CATALOG_SERVER = CATALOG_DIR / "server.yaml"
 CATALOG_TOOLS = CATALOG_DIR / "tools.json"
 CATALOG_README = CATALOG_DIR / "readme.md"
+CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "docker.yml"
 
 
 def test_dockerfile_exists() -> None:
@@ -140,11 +142,43 @@ def test_dockerignore_allows_readme_for_hatchling() -> None:
     assert "!README.md" in content, "README.md must be whitelisted for the build"
 
 
-@pytest.mark.parametrize("script", [BUILD_SCRIPT, SMOKE_SCRIPT])
+@pytest.mark.parametrize("script", [BUILD_SCRIPT, SMOKE_SCRIPT, INSPECT_SCRIPT])
 def test_helper_scripts_are_executable(script: Path) -> None:
     assert script.is_file(), f"{script.name} must exist"
     mode = stat.S_IMODE(os.stat(script).st_mode)
     assert mode & 0o111, f"{script.name} must be executable, got mode {oct(mode)}"
+
+
+def test_build_script_supports_platform_flag() -> None:
+    content = BUILD_SCRIPT.read_text(encoding="utf-8")
+    assert "--platform=" in content, (
+        "build script must accept --platform=<arch> for multi-arch builds"
+    )
+    assert "buildx build" in content, (
+        "build script must use docker buildx so multi-arch works"
+    )
+
+
+def test_inspect_script_validates_image_exists() -> None:
+    content = INSPECT_SCRIPT.read_text(encoding="utf-8")
+    assert "docker image inspect" in content
+    assert "not found" in content.lower() or "missing" in content.lower(), (
+        "inspect script must refuse to run against a missing image"
+    )
+
+
+def test_ci_workflow_exists_and_builds_matrix() -> None:
+    """The repo must ship a CI workflow so a broken Dockerfile is caught
+    on every PR."""
+    assert CI_WORKFLOW.is_file(), ".github/workflows/docker.yml is required for CI"
+    content = CI_WORKFLOW.read_text(encoding="utf-8")
+    assert "matrix" in content, "CI must build across a platform matrix"
+    assert "linux/amd64" in content and "linux/arm64" in content, (
+        "CI must cover the same architectures the build script advertises"
+    )
+    assert "docker-smoke-test.sh" in content or "scripts/docker-smoke-test.sh" in content, (
+        "CI must invoke the smoke test against the freshly built image"
+    )
 
 
 def test_docker_mcp_catalog_entry_exists() -> None:

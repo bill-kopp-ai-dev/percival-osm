@@ -108,4 +108,44 @@ run "osm_get_version round-trips via stdio MCP" \
             && echo "${out}" | grep -q "Version snapshot"
     '
 
+# ---------------------------------------------------------------------------
+# 4. All canonical tools register through the MCP stdio transport.
+# ---------------------------------------------------------------------------
+run "all canonical tools are registered" \
+    env IMAGE="${IMAGE}" bash -c '
+        set -e
+        req1=$'\''{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke","version":"0.0.0"}}}'\''
+        req2=$'\''{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}'\''
+        req3=$'\''{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'\''
+
+        fifo=$(mktemp -u)
+        rm -f "${fifo}"
+        mkfifo "${fifo}"
+
+        (
+            sleep 0.5
+            printf "%s\n%s\n%s\n" "${req1}" "${req2}" "${req3}" >"${fifo}"
+            sleep 0.5
+        ) &
+
+        out=$(docker run --rm -i \
+            -e USER_AGENT="smoke-test/1.0 (smoke@example.com)" \
+            -e FROM_HEADER="smoke@example.com" \
+            --network=none \
+            "${IMAGE}" <"${fifo}" 2>/dev/null || true)
+        rm -f "${fifo}"
+
+        # The tools/list response carries every tool name. Verify the
+        # canonical ones are present. Legacy aliases are gated behind
+        # OSM_EXPOSE_LEGACY_ALIASES=true (the default), so we accept them.
+        for tool in osm_find_nearby osm_find_place osm_find_address \
+                    osm_geocode osm_navigate osm_directions \
+                    osm_get_health osm_get_version osm_get_security_metrics; do
+            if ! echo "${out}" | grep -q "\"name\":\"${tool}\""; then
+                printf "  missing canonical tool: %s\n" "${tool}"
+                exit 1
+            fi
+        done
+    '
+
 printf '\n[smoke] all checks passed for %s\n' "${IMAGE}"
