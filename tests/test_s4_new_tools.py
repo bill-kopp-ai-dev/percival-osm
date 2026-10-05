@@ -161,3 +161,65 @@ def test_legacy_aliases_registration_can_be_disabled(monkeypatch) -> None:
     assert server_mod.valves.expose_legacy_aliases is False
     monkeypatch.setattr(server_mod.valves, "expose_legacy_aliases", True)
     assert server_mod.valves.expose_legacy_aliases is True
+
+
+def test_calculate_route_uses_walking_profile_for_short_hops(monkeypatch) -> None:
+    """Regression: ``OrsRouter.calculate_route`` used to derive its profile
+    from ``to_thing.get("distance", 9000)`` — but Nominatim results never
+    carry a ``distance`` field, so the default ``9000`` was always
+    returned and the router always fell back to ``driving-car``. The
+    correct behaviour is to compute the haversine distance between the
+    two endpoints and use ``foot-walking`` for short hops.
+    """
+    from percival_osm_mcp.server import OrsRouter, Settings
+
+    settings = _base_settings(car_only=False, cache_file="/tmp/osm-test-route-walk.json")
+
+    observed_profile: dict = {}
+
+    class FakeOrsClient:
+        def request(self, url, _get_params, post_json=None, dry_run=None):  # type: ignore[no-untyped-def]
+            # URL pattern: /v2/directions/{profile}/{format}
+            parts = url.strip("/").split("/")
+            # parts == ['v2', 'directions', profile, format]
+            observed_profile["profile"] = parts[2]
+            return {"routes": [{"summary": {"distance": 0.4, "duration": 300.0}}]}
+
+    router = OrsRouter(settings, user_valves=None)
+    router._client = FakeOrsClient()
+    router.cache.clear_cache()
+
+    # Two points ~111m apart on the equator (a short, walkable hop).
+    from_thing = {"lat": 0.0, "lon": 0.0}
+    to_thing = {"lat": 0.001, "lon": 0.0}  # no "distance" key
+    route = router.calculate_route(from_thing, to_thing)
+    assert route is not None
+    assert observed_profile.get("profile") == "foot-walking", (
+        "short haversine hops should use the foot-walking profile"
+    )
+
+
+def test_calculate_route_uses_car_profile_for_long_hops(monkeypatch) -> None:
+    """Long hops should always use the driving-car profile even when
+    the input nominatim dict has no ``distance`` field.
+    """
+    from percival_osm_mcp.server import OrsRouter, Settings
+
+    settings = _base_settings(car_only=False, cache_file="/tmp/osm-test-route-car.json")
+    observed_profile: dict = {}
+
+    class FakeOrsClient:
+        def request(self, url, _get_params, post_json=None, dry_run=None):  # type: ignore[no-untyped-def]
+            parts = url.strip("/").split("/")
+            observed_profile["profile"] = parts[2]
+            return {"routes": [{"summary": {"distance": 10.0, "duration": 600.0}}]}
+
+    router = OrsRouter(settings, user_valves=None)
+    router._client = FakeOrsClient()
+    router.cache.clear_cache()
+
+    from_thing = {"lat": 0.0, "lon": 0.0}
+    to_thing = {"lat": 0.5, "lon": 0.5}  # ~70 km diagonal
+    route = router.calculate_route(from_thing, to_thing)
+    assert route is not None
+    assert observed_profile.get("profile") == "driving-car"

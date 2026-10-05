@@ -1614,14 +1614,15 @@ class OrsRouter:
         if not self._client:
             return None
 
-        # select profile based on distance for more accurate
-        # measurements. very close haversine distances use the walking
-        # profile, which should (usually?) essentially cover walking
-        # and biking. further away = use car.
-        raw_distance = to_thing.get("distance", 9000)
+        # select profile based on the haversine distance between
+        # the two endpoints. ``to_thing`` comes from a Nominatim
+        # search result and therefore does not carry a ``distance``
+        # field, so we must compute it ourselves. very close
+        # haversine distances use the walking profile (which also
+        # covers biking for short hops). further away = use car.
         try:
-            distance_km = float(raw_distance)
-        except (TypeError, ValueError):
+            distance_km = haversine_distance(from_thing, to_thing)
+        except (KeyError, TypeError, ValueError):
             distance_km = 9000
 
         if not self.valves.car_only and distance_km <= 1.5:
@@ -1834,6 +1835,10 @@ class OsmSearcher:
                     raise
                 await asyncio.sleep(backoff * (attempt + 1))
 
+        # The loop above always either returns (on success) or re-raises
+        # (on the last attempt or non-retryable failure), so this line is
+        # unreachable. Kept as a defensive guard for future refactors that
+        # might introduce a new exit path (e.g. cancellation handling).
         if last_exception is not None:
             raise last_exception
         raise RuntimeError("HTTP request failed unexpectedly")
@@ -1929,7 +1934,8 @@ class OsmSearcher:
         street_name = street if street is not None else ""
         source_name = sanitize_external_text(f"{thing['name']} {street_name}", max_length=220)
         lat, lon = thing["lat"], thing["lon"]
-        osm_link = create_osm_link(lat, lon)
+        has_coords = isinstance(lat, (int, float)) and isinstance(lon, (int, float))
+        osm_link = create_osm_link(lat, lon) if has_coords else None
         addr = (
             f"at {sanitize_external_text(thing['address'], max_length=280)}"
             if thing["address"] != "unknown"
@@ -1958,6 +1964,13 @@ class OsmSearcher:
         source_name = converted["source_name"]
         document = converted["document"]
         osm_link = converted["osm_link"]
+
+        # If we couldn't derive a usable OSM link (e.g. thing had no
+        # coordinates), drop the citation rather than emit a broken one
+        # — the search results are still surfaced via the regular
+        # tool-response payload.
+        if not osm_link:
+            return
 
         await self.event_emitter(
             {
@@ -3637,7 +3650,6 @@ def get_security_metrics() -> Annotated[
     This tool is read-only and exposes aggregated counts of blocked/failed
     security-relevant events (auth, URL policy, cache path, upstream failures).
     """
-    record_tool_call("osm_get_security_metrics")
     return build_tool_response(
         status="ok",
         message="Security metrics snapshot.",
@@ -3827,6 +3839,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
-    main()
     main()

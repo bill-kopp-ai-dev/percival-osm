@@ -131,6 +131,29 @@ def test_main_entrypoint_declared_once():
     )
 
 
+def test_main_called_only_once_in_main_block():
+    """Regression: even after the v0.4.0 fix, the ``__main__`` block still
+    contained three back-to-back ``main()`` invocations, which would each
+    re-run ``asyncio.run(async_main())`` and triple-print the startup banner.
+    The block must invoke ``main()`` exactly once.
+    """
+    import re
+
+    src = Path(server_mod.__file__).read_text(encoding="utf-8")
+    # Find the __main__ guard and inspect what is inside it.
+    match = re.search(
+        r"if __name__ == ['\"]__main__['\"]:\s*\n(?P<body>[\s\S]*?)\Z",
+        src,
+    )
+    assert match is not None, "expected an __main__ guard in server.py"
+    body = match.group("body")
+    calls = re.findall(r"^\s*main\(\)\s*$", body, flags=re.MULTILINE)
+    assert len(calls) == 1, (
+        f"expected exactly one main() call inside the __main__ block, "
+        f"found {len(calls)}"
+    )
+
+
 def test_pygments_and_dead_helpers_removed():
     """Regression: ``pygments`` and the ``pretty_print_thing_json`` helper
     are dead code; ``FONTS`` / ``FONT_CSS`` / ``HIGHLIGHT_CSS`` were never

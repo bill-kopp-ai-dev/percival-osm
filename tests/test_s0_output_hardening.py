@@ -97,3 +97,26 @@ async def test_navigation_no_results_returns_structured_payload() -> None:
     assert payload["status"] in {"no_results", "error"}
     if payload["status"] == "no_results":
         assert payload["message"] == NO_RESULTS
+
+
+def test_create_result_document_skips_link_for_invalid_coords() -> None:
+    """When a thing has no usable lat/lon, the citation must not carry a
+    broken ``/unknown/unknown`` OSM link. ``parse_and_validate_thing``
+    drops such things, but defensive code in ``create_result_document``
+    must also gate the link on a real coordinate pair.
+    """
+    settings = Settings()
+    searcher = OsmSearcher(settings, user_valves=None)
+    # The thing is missing lat/lon entirely — it would normally be dropped,
+    # but verify the document builder also handles the case gracefully when
+    # invoked directly with a hand-crafted thing whose friendly_thing has
+    # string "unknown" lat/lon (paranoia for upstream changes).
+    thing = {
+        "type": "node",
+        "tags": {"name": "Ghost Place", "amenity": "cafe"},
+        # No lat/lon — parse_and_validate_thing returns None for this case.
+    }
+    converted = searcher.create_result_document(thing)
+    # Either we filter it out (None) or we produce a document but no link.
+    if converted is not None:
+        assert converted["osm_link"] is None

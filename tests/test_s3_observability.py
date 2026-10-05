@@ -149,3 +149,21 @@ def test_settings_accept_new_flags() -> None:
     assert settings.log_level == "WARNING"
     assert settings.nominatim_rate_limit_rps == 2.0
     assert settings.nominatim_rate_limit_burst == 5
+
+
+def test_security_metrics_tool_is_not_double_counted() -> None:
+    """Regression: ``osm_get_security_metrics`` used to record its own call
+    *and* be wrapped by the ``@_track`` decorator, which bumped the
+    per-tool counter twice per invocation. Verify a fresh module reports
+    exactly one call after a single ``get_security_metrics()`` invocation.
+    """
+    from percival_osm_mcp.server import get_security_metrics
+
+    reset_operational_metrics_for_tests()
+    # Reuse the public tool entry point — this exercises the @_track path.
+    get_security_metrics()
+    snapshot = get_operational_snapshot()
+    assert snapshot["tool_calls"].get("osm_get_security_metrics") == 1, (
+        "osm_get_security_metrics must increment the per-tool counter "
+        "exactly once per invocation"
+    )
