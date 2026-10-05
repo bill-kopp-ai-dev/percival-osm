@@ -1,11 +1,11 @@
 # 🤖 Percival OSM — percival.OS MCP
 
-**Version 0.4.1**
+**Version 0.5.0**
 
 [![Python](https://img.shields.io/badge/python-3.11+-yellow.svg)]()
 [![MCP](https://img.shields.io/badge/mcp-server-blue.svg)]()
 [![percival.OS](https://img.shields.io/badge/percival.OS-ecosystem-orange.svg)](https://github.com/bill-kopp-ai-dev/percival.OS)
-[![Tests](https://img.shields.io/badge/tests-45%20passed-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-74%20passed-brightgreen.svg)]()
 
 ---
 
@@ -274,6 +274,156 @@ never stampede the upstream API.
 
 ---
 
+## 🐳 Docker deployment
+
+The project ships first-class Docker support: a hardened multi-stage
+image, a stdio-friendly `docker-compose.yml`, and a pre-formatted
+submission to the [Docker MCP Catalog](https://hub.docker.com/mcp).
+The image is designed to drop into any MCP-compatible client — nanobot,
+opencode, Claude Desktop, the Docker MCP Toolkit — without extra glue.
+
+### Quick start — stdio (the common case)
+
+```bash
+# Build the local image (multi-arch buildx; <30s with cache, ~2m cold)
+scripts/docker-build.sh
+
+# Run interactively as an MCP stdio server. Wire this command into the
+# client of your choice under ``mcpServers.percival-osm`` — see the
+# per-client snippets below.
+docker run --rm -i \
+  -e USER_AGENT='percival-osm/0.4.1 (you@example.com)' \
+  -e FROM_HEADER='you@example.com' \
+  percival-osm:local
+```
+
+### Quick start — docker compose
+
+```bash
+# Copy and customise the env file the compose stack expects
+cp .env.example .env
+$EDITOR .env   # set USER_AGENT, FROM_HEADER, optional ORS_API_KEY
+
+# Start the stdio service (the default). The container is referenced
+# by the MCP client, not bound to host ports.
+docker compose up -d percival-osm
+
+# Or start the streamable-http service (behind the ``http`` profile)
+# for Docker MCP Toolkit, browser debug clients, or remote deployments.
+docker compose --profile http up -d percival-osm-http
+```
+
+### Quick start — Docker MCP Toolkit
+
+Once the project is published to the Docker MCP Catalog
+(see `servers/percival-osm/`), the server can be added to any
+profile from the catalog UI:
+
+```bash
+# Local catalog import for development
+docker mcp catalog import $PWD/servers/percival-osm/catalog.yaml
+docker mcp server enable percival-osm
+```
+
+The catalog entry declares the two mandatory env vars
+(`USER_AGENT`, `FROM_HEADER`) and the optional `ORS_API_KEY` as
+configurable UI fields, so operators don't need to edit a `.env`.
+
+### Wiring into specific MCP clients
+
+**nanobot** (`~/.nanobot/config.json`):
+
+```json
+{
+  "tools": {
+    "mcpServers": {
+      "percival-osm": {
+        "command": "docker",
+        "args": [
+          "run", "--rm", "-i",
+          "-e", "USER_AGENT=percival-osm/0.4.1 (you@example.com)",
+          "-e", "FROM_HEADER=you@example.com",
+          "-e", "ORS_API_KEY=${OPENROUTESERVICE_API_KEY}",
+          "percival-osm:local"
+        ]
+      }
+    }
+  }
+}
+```
+
+**opencode** (`opencode.json` or `~/.config/opencode/opencode.json`):
+
+```json
+{
+  "mcp": {
+    "percival-osm": {
+      "type": "stdio",
+      "command": [
+        "docker", "run", "--rm", "-i",
+        "-e", "USER_AGENT=percival-osm/0.4.1 (you@example.com)",
+        "-e", "FROM_HEADER=you@example.com",
+        "percival-osm:local"
+      ]
+    }
+  }
+}
+```
+
+**Claude Desktop / generic stdio MCP**: configure the same
+`docker run --rm -i … percival-osm:local` invocation under
+`mcpServers.percival-osm`.
+
+### Image security baseline
+
+The shipped image is hardened by construction. The CI workflow at
+`.github/workflows/docker.yml` and the static checks in
+`tests/test_d6_docker.py` enforce:
+
+| Control | Value |
+|---|---|
+| User | `percival` (uid 10001) — non-root by default |
+| `cap_drop` | `ALL` (compose + Toolkit both) |
+| `security_opt` | `no-new-privileges:true` |
+| PID 1 | `tini` (clean signal reaping) |
+| Read-only root FS | enforced in compose |
+| `/tmp` | `tmpfs: 64m, mode=1777, noexec, nosuid, nodev` |
+| Resources (compose / Toolkit) | 1 CPU, 1 GB memory cap |
+| Cache file | `/cache/osm-cache.json`, mode `0600`, named volume |
+| Healthcheck | `pgrep` in stdio mode, port-open check in HTTP mode |
+
+### Build, smoke-test, inspect
+
+```bash
+# Build (defaults to host arch; pass --platform=linux/arm64 for multi-arch)
+scripts/docker-build.sh
+scripts/docker-build.sh v0.5.0                       # extra tag
+PLATFORMS=linux/amd64,linux/arm64 scripts/docker-build.sh  # multi-arch
+
+# 4-step smoke test (non-root, env-var guard, stdio MCP round-trip, tools/list)
+scripts/docker-smoke-test.sh
+
+# Print OCI labels, healthcheck, env, resolved site-packages
+scripts/docker-inspect.sh
+```
+
+### Submitting to the Docker MCP Catalog
+
+The catalog submission artifacts live in
+[`servers/percival-osm/`](./servers/percival-osm/):
+
+- `server.yaml` — registry-format definition (name, image, meta, env vars)
+- `tools.json`  — exposed tool catalogue (no runtime introspection needed)
+- `readme.md`   — documentation pointer
+
+To submit, follow the upstream
+[contributing guidelines](https://github.com/docker/mcp-registry/blob/main/CONTRIBUTING.md)
+and open a PR against `docker/mcp-registry`. After approval Docker will
+rebuild the image under the `mcp/percival-osm` namespace with
+signatures, provenance, and SBOMs attached.
+
+---
+
 ## 🛠️ Development & Testing
 
 ### Run locally
@@ -292,11 +442,12 @@ PYTHONPATH=src .venv/bin/python -m percival_osm_mcp --mode streamable-http --por
 ### Tests
 
 ```bash
-# Run the full suite (45 tests, <1s)
+# Run the full suite (74 tests, <1s)
 uv run pytest -v
 
 # Targeted suites
 uv run pytest tests/test_s5_primitives.py       # prompts + resources + bug regressions
+uv run pytest tests/test_d6_docker.py          # Dockerfile / compose / catalog artifacts
 uv run pytest tests/test_s3_observability.py    # health, version, structured logging, rate limit
 uv run pytest tests/test_runtime_security.py    # URL policy + sanitization
 ```
@@ -339,7 +490,56 @@ Every blocking or failure path increments a counter exposed via
 
 ## 📝 Changelog
 
-### 0.4.1 — current
+### 0.5.0 — current
+- **Bug fixes (code review round 1)**:
+  - `main()` is now called exactly once in the `__main__` block (the
+    CHANGELOG for 0.4.0 had claimed the 11× → 1× fix but three copies
+    were still below the guard).
+  - `OrsRouter.calculate_route` now computes the haversine distance
+    between the two endpoints to choose the ORS profile. Previously it
+    always read `to_thing.get("distance", 9000)`, but Nominatim search
+    results never carry a `distance` field, so the router always used
+    `driving-car` even for foot-walkable hops.
+  - `osm_get_security_metrics` no longer double-counts its own
+    invocation. The `@_track` decorator already bumps the counter,
+    so the inline `record_tool_call(...)` in the body is gone.
+  - `create_result_document` only emits an OSM link when the
+    coordinates are real numbers; broken `/unknown/unknown` URLs are
+    dropped, and `emit_result_citation` skips the citation entirely
+    when no link is available.
+  - Removed dead code at the bottom of `_http_get_json`'s retry loop
+    (the loop always returns or re-raises), with a clarifying comment.
+- **First-class Docker support**:
+  - Multi-stage Dockerfile (`ghcr.io/astral-sh/uv:python3.12-bookworm-slim`
+    builder → `python:3.12-slim-bookworm` runtime, ~249 MB uncompressed).
+  - Hardened: non-root user (uid 10001), `tini` as PID 1, `cap_drop ALL`,
+    `no-new-privileges`, `read_only: true` root FS, `tmpfs /tmp` with
+    `noexec,nosuid,nodev`, `HEALTHCHECK` covering both stdio and HTTP modes.
+  - `docker-entrypoint.sh` validates `USER_AGENT` + `FROM_HEADER` and
+    refuses to run as root, exiting with `EX_CONFIG` (78) on
+    misconfiguration so container logs show a clear, actionable error.
+  - `docker-compose.yml` defaults to stdio transport (the common case)
+    and exposes the streamable-http service behind an `http` profile,
+    with 1 CPU / 1 GB resource caps matching the Docker MCP Toolkit
+    defaults.
+  - `scripts/docker-build.sh` and `scripts/docker-smoke-test.sh` —
+    reproducible build (with multi-arch via `PLATFORMS=...` /
+    `--platform=`) and a 4-step smoke test (non-root user, env-var
+    guard, stdio MCP round-trip, full tools/list coverage).
+  - `scripts/docker-inspect.sh` — prints OCI labels, healthcheck JSON,
+    user/entrypoint/cmd, env, and resolved site-packages.
+  - Docker MCP Catalog submission artifacts under `servers/percival-osm/`
+    (`server.yaml`, `tools.json`, `readme.md`) — drop-in importable via
+    `docker mcp catalog import`.
+  - GitHub Actions workflow (`.github/workflows/docker.yml`) runs the
+    multi-arch build + smoke test on every PR and push to main.
+- **Test coverage**:
+  - 5 new regression tests for the bug fixes (suite was 45 → 50).
+  - 24 new tests in `tests/test_d6_docker.py` lock in the Dockerfile,
+    compose, entrypoint, and catalog artifacts. Suite is now **74 tests,
+    <1s**, bandit-clean.
+
+### 0.4.1
 - **Security**: removed `env_file=".env"` from `Settings`. The server no
   longer reads secrets from disk; all configuration comes from the
   process environment. Eliminates the on-disk secret leak surface and

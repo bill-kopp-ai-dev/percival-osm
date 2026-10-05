@@ -42,6 +42,7 @@ AGENTS.md
 # everything else under docs/ by listing the sub-paths we don't ship.
 docs/README.md
 docs/*.md
+docs/deployment
 docs/integrations
 docs/development
 

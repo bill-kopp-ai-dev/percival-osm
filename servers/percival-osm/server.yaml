@@ -41,7 +41,7 @@ about:
   icon: https://avatars.githubusercontent.com/u/214899409?s=200&v=4
 source:
   project: https://github.com/bill-kopp-ai-dev/percival-osm
-  commit: 597d676
+  commit: e07ca38
   # When the upstream changes, bump this to the commit SHA of the release
   # tag being imported into the catalog.
 config:
