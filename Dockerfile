@@ -126,22 +126,10 @@ ENV MODE=stdio
 ENV PORT=8080
 EXPOSE 8080
 
-# Lightweight healthcheck: confirms the process is alive and (in HTTP mode)
-# that the port is open. We deliberately do *not* hit an upstream — a
-# failing upstream should not flap the container's health. For HTTP mode,
-# any response from the Starlette app (even a 401/404 from auth-required
-# URLs) proves the process is listening.
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD if [ "${MODE}" = "stdio" ]; then \
-            pgrep -f "percival_osm_mcp" >/dev/null || exit 1; \
-        else \
-            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 \
-                    "http://127.0.0.1:${PORT}/" || echo "000"); \
-            case "${code}" in \
-                200|401|404|405) exit 0 ;; \
-                *)              exit 1 ;; \
-            esac; \
-        fi
+# Stdio is the image default and has no truthful Docker health probe: process
+# presence cannot prove the MCP handshake. The HTTP Compose service supplies
+# its own listener probe; it never checks an upstream API.
+HEALTHCHECK NONE
 
 # tini reaps zombies and forwards signals; the entrypoint validates env,
 # drops to a known state, and exec's the MCP server.

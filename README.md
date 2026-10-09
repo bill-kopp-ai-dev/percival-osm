@@ -206,7 +206,7 @@ OSM_LOG_LEVEL=INFO                      # DEBUG | INFO | WARNING | ERROR
 OSM_REQUIRE_HTTPS_UPSTREAMS=true
 OSM_UPSTREAM_ALLOWED_HOSTS=nominatim.openstreetmap.org,overpass-api.de,api.openrouteservice.org
 OSM_HTTP_FOLLOW_REDIRECTS=false         # avoids SSRF via redirect
-MCP_OSM_AUTH_TOKEN=…                    # required for non-loopback HTTP exposure
+MCP_OSM_AUTH_TOKEN=…                    # required by the authenticated Compose HTTP profile
 
 # Cache
 OSM_CACHE_FILE=/tmp/osm-cache.json
@@ -302,15 +302,15 @@ docker run --rm -i \
 ```bash
 # Copy and customise the env file the compose stack expects
 cp .env.example .env
-$EDITOR .env   # set USER_AGENT, FROM_HEADER, optional ORS_API_KEY
+$EDITOR .env   # set USER_AGENT, FROM_HEADER, and optional ORS_API_KEY
 
-# Start the stdio service (the default). The container is referenced
-# by the MCP client, not bound to host ports.
-docker compose up -d percival-osm
+# Run stdio as an on-demand MCP process: no TTY, port, healthcheck or restart.
+docker compose run --rm -T mcp-osm
 
-# Or start the streamable-http service (behind the ``http`` profile)
-# for Docker MCP Toolkit, browser debug clients, or remote deployments.
-docker compose --profile http up -d percival-osm-http
+# Or start authenticated Streamable HTTP on host loopback (set
+# MCP_OSM_AUTH_TOKEN in .env first; use HTTP_BIND_ADDRESS only for an
+# intentional external bind).
+docker compose --profile http up -d mcp-osm-http
 ```
 
 ### Quick start — Docker MCP Toolkit
@@ -390,7 +390,7 @@ The shipped image is hardened by construction. The CI workflow at
 | `/tmp` | `tmpfs: 64m, mode=1777, noexec, nosuid, nodev` |
 | Resources (compose / Toolkit) | 1 CPU, 1 GB memory cap |
 | Cache file | `/cache/osm-cache.json`, mode `0600`, named volume |
-| Healthcheck | `pgrep` in stdio mode, port-open check in HTTP mode |
+| Healthcheck | Disabled for stdio; HTTP Compose profile probes the local listener without testing upstream APIs |
 
 ### Build, smoke-test, inspect
 
@@ -400,7 +400,7 @@ scripts/docker-build.sh
 scripts/docker-build.sh v0.5.0                       # extra tag
 PLATFORMS=linux/amd64,linux/arm64 scripts/docker-build.sh  # multi-arch
 
-# 4-step smoke test (non-root, env-var guard, stdio MCP round-trip, tools/list)
+# Smoke test (stdio MCP, no healthcheck/TTY, HTTP auth/bind/health, shutdown)
 scripts/docker-smoke-test.sh
 
 # Print OCI labels, healthcheck, env, resolved site-packages
@@ -480,7 +480,7 @@ form):
 | Single-flight | Concurrent duplicate calls share one upstream request |
 | Sanitization | All upstream-rendered text goes through `sanitize_external_text` / `sanitize_external_markdown` |
 | Cache | File must live under `OSM_CACHE_ALLOWED_DIRS`; TTL configurable |
-| Auth | `MCP_OSM_AUTH_TOKEN` required for non-loopback HTTP transports |
+| Auth | Compose HTTP profile requires `MCP_OSM_AUTH_TOKEN`; host bind is loopback by default |
 | Logging | stderr only; never touches the MCP stdio stream |
 
 Every blocking or failure path increments a counter exposed via

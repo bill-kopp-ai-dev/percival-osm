@@ -41,9 +41,9 @@ MCP client of choice (nanobot, opencode, Claude Desktop, …) directly via
    so the server can be installed from the Toolkit UI without touching
    a JSON config.
 4. **Operational ergonomics** — the same image runs as a one-shot
-   `docker run` for development or as a long-lived compose stack for
-   production; healthchecks, resource caps, and log routing come for
-   free.
+   stdio MCP process or as an explicitly selected authenticated HTTP
+   Compose service; resource caps and log routing come from the shared
+   runtime configuration.
 
 ## Image architecture
 
@@ -56,7 +56,7 @@ ghcr.io/astral-sh/uv:python3.12-bookworm-slim   ← builder stage
         bash, ca-certificates, curl, tini
         USER percival (uid 10001)
         ENTRYPOINT ["/usr/bin/tini", "--", "docker-entrypoint.sh"]
-        HEALTHCHECK pgrep in stdio / curl in http mode
+        no image healthcheck; HTTP Compose profile probes listener
         EXPOSE 8080
 ```
 
@@ -283,18 +283,20 @@ docker mcp server enable percival-osm
 
 ### Healthcheck
 
-The container ships a `HEALTHCHECK` directive that:
+The stdio image has **no Docker healthcheck**. Process presence cannot
+prove that an MCP server completed `initialize` or registered tools, and
+the runtime image does not include `pgrep`. Validate stdio with an MCP
+handshake and `tools/list` instead.
 
-- In stdio mode: verifies the `percival_osm_mcp` process is alive via
-  `pgrep -f`. An upstream failure does *not* flap the container's
-  health — only the process itself.
-- In HTTP mode: issues a `curl` to the bound port and treats any of
-  `200 / 401 / 404 / 405` as "the server is up". A 401 is acceptable
-  because the auth middleware rejects unauthenticated traffic before
-  the app layer.
+Only the Compose HTTP profile has a listener healthcheck. It probes `/` and
+treats `200 / 401 / 404 / 405` as a responding app; `401` is expected without
+a bearer token. It does not probe Nominatim, Overpass, or ORS. The HTTP
+profile requires `MCP_OSM_AUTH_TOKEN` and binds the published host port to
+`127.0.0.1` by default. Set `HTTP_BIND_ADDRESS` to expose it elsewhere only
+with an intentional network policy; the bearer token remains mandatory.
 
 Use `docker inspect --format '{{.State.Health.Status}}' <container>`
-to read the current state from outside.
+for the HTTP profile. Stdio containers have no Docker health state.
 
 ### Logs
 

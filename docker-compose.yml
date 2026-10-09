@@ -22,7 +22,6 @@ x-base-config: &base-config
     context: .
     dockerfile: Dockerfile
   image: percival-osm:local
-  restart: unless-stopped
   pull_policy: build
   user: "10001:10001"
   read_only: true
@@ -42,7 +41,7 @@ x-base-config: &base-config
       reservations:
         cpus: "0.25"
         memory: 256M
-  environment:
+  environment: &base-environment
     OSM_CACHE_FILE: /cache/osm-cache.json
     OSM_CACHE_ALLOWED_DIRS: /cache
     OSM_LOG_FORMAT: ${OSM_LOG_FORMAT:-plain}
@@ -67,12 +66,15 @@ services:
     container_name: percival-osm
     <<: *base-config
     command: ["stdio"]
+    restart: "no"
     volumes:
       - percival-cache:/cache
-    # ``stdin_open`` + ``tty`` are required for the MCP client to talk to
-    # the container over stdio.
+    # Keep stdin available for the MCP client, but never allocate a TTY:
+    # stdout is the JSON-RPC stream.
     stdin_open: true
-    tty: true
+    tty: false
+    healthcheck:
+      disable: true
 
   # ---------------------------------------------------------------------------
   # Optional HTTP transport for Docker MCP Toolkit, browser debug clients,
@@ -84,16 +86,33 @@ services:
     profiles: ["http"]
     command: ["streamable-http"]
     ports:
-      # Map host PORT -> container 8080. The container always listens on
-      # 8080 (see Dockerfile) regardless of the host port.
-      - "${PORT:-8080}:8080"
+      # Publish on loopback by default. External binding is an explicit
+      # operator choice; this service always requires a bearer token.
+      - "${HTTP_BIND_ADDRESS:-127.0.0.1}:${HTTP_PORT:-8080}:8080"
     environment:
+      <<: *base-environment
       MODE: streamable-http
       PORT: "8080"
-      ALLOW_REMOTE_HTTP: ${ALLOW_REMOTE_HTTP:-false}
-      MCP_OSM_AUTH_TOKEN: ${MCP_OSM_AUTH_TOKEN:-}
+      # The process binds inside the container's network namespace; the
+      # host port remains loopback-only unless explicitly overridden above.
+      ALLOW_REMOTE_HTTP: "true"
+      MCP_OSM_AUTH_TOKEN: ${MCP_OSM_AUTH_TOKEN:?MCP_OSM_AUTH_TOKEN must be set for HTTP mode}
     volumes:
       - percival-cache:/cache
+    restart: unless-stopped
+    # A response from the app proves listener liveness. 401 is expected
+    # without a bearer token; upstream API availability is not probed.
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          code=$$(curl -s -o /dev/null -w '%{http_code}' --max-time 3
+          "http://127.0.0.1:8080/" || echo "000");
+          case "$$code" in 200|401|404|405) exit 0 ;; *) exit 1 ;; esac
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
 volumes:
   percival-cache:

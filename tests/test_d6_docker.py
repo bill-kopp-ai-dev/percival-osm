@@ -51,11 +51,12 @@ def test_dockerfile_uses_non_root_user() -> None:
     )
 
 
-def test_dockerfile_declares_healthcheck() -> None:
+def test_stdio_image_disables_transport_agnostic_healthcheck() -> None:
     content = DOCKERFILE.read_text(encoding="utf-8")
-    assert "HEALTHCHECK" in content, (
-        "Dockerfile must declare a HEALTHCHECK so the Docker MCP Toolkit can monitor the container"
+    assert re.search(r"^HEALTHCHECK\s+NONE\s*$", content, flags=re.MULTILINE), (
+        "The default stdio image must not inherit a process-only HTTP healthcheck"
     )
+    assert "pgrep" not in content, "the runtime image must not depend on pgrep"
 
 
 def test_dockerfile_uses_tini_for_signal_reaping() -> None:
@@ -111,11 +112,34 @@ def test_entrypoint_supports_both_transport_modes() -> None:
         assert mode in content, f"entrypoint must support {mode} mode"
 
 
-def test_compose_has_stdio_and_http_profiles() -> None:
-    content = COMPOSE.read_text(encoding="utf-8")
-    assert 'command: ["stdio"]' in content or "command: [\"stdio\"]" in content
-    assert "streamable-http" in content
-    assert "profiles:" in content, "compose must declare a profile for the optional HTTP service"
+def test_compose_stdio_is_non_tty_without_http_health_or_restart() -> None:
+    import yaml
+
+    compose = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
+    service = compose["services"]["mcp-osm"]
+    assert service["stdin_open"] is True
+    assert service["tty"] is False
+    assert service["restart"] == "no"
+    assert "ports" not in service
+    assert service["healthcheck"]["disable"] is True
+
+
+def test_compose_http_profile_keeps_auth_bind_and_health_probe() -> None:
+    import yaml
+
+    compose = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
+    service = compose["services"]["mcp-osm-http"]
+    environment = service["environment"]
+    probe = " ".join(service["healthcheck"]["test"])
+    assert service["profiles"] == ["http"]
+    assert service["ports"] == ["${HTTP_BIND_ADDRESS:-127.0.0.1}:${HTTP_PORT:-8080}:8080"]
+    assert environment["USER_AGENT"].startswith("${USER_AGENT:?")
+    assert environment["FROM_HEADER"].startswith("${FROM_HEADER:?")
+    assert environment["MCP_OSM_AUTH_TOKEN"].startswith("${MCP_OSM_AUTH_TOKEN:?")
+    assert environment["ALLOW_REMOTE_HTTP"] == "true"
+    assert "http://127.0.0.1:8080/" in probe
+    assert "200|401|404|405" in probe
+    assert "pgrep" not in probe
 
 
 def test_compose_pins_user_to_10001() -> None:
