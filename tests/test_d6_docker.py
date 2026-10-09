@@ -193,15 +193,12 @@ def test_inspect_script_validates_image_exists() -> None:
     )
 
 
-def test_ci_workflow_exists_and_builds_matrix() -> None:
-    """The repo must ship a CI workflow so a broken Dockerfile is caught
-    on every PR."""
+def test_ci_workflow_builds_approved_platform_and_smokes_candidate() -> None:
+    """CI must cover the approved platform on every PR and smoke that image."""
     assert CI_WORKFLOW.is_file(), ".github/workflows/docker.yml is required for CI"
     content = CI_WORKFLOW.read_text(encoding="utf-8")
-    assert "matrix" in content, "CI must build across a platform matrix"
-    assert "linux/amd64" in content and "linux/arm64" in content, (
-        "CI must cover the same architectures the build script advertises"
-    )
+    assert "matrix" in content, "CI must declare the approved platform matrix"
+    assert "platform: [linux/amd64]" in content
     assert "docker-smoke-test.sh" in content or "scripts/docker-smoke-test.sh" in content, (
         "CI must invoke the smoke test against the freshly built image"
     )

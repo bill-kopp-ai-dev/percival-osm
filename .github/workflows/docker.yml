@@ -13,65 +13,92 @@ concurrency:
   group: docker-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
-
 jobs:
   # ---------------------------------------------------------------------------
-  # 1. BuildKit + smoke test against the multi-arch image. Runs on every PR
+  # 1. BuildKit + smoke test against the approved linux/amd64 image. Runs on every PR
   #    so a broken Dockerfile is caught before review.
   # ---------------------------------------------------------------------------
   build:
     name: build (${{ matrix.platform }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
       matrix:
-        platform: [linux/amd64, linux/arm64]
+        platform: [linux/amd64]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Compute image metadata (tags + labels)
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=ref,event=branch
-            type=ref,event=pr
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=sha,format=short
+      - name: Resolve image version
+        id: version
+        run: echo "version=$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')" >> "$GITHUB_OUTPUT"
 
-      - name: Build (and load on amd64 so we can smoke-test)
+      - name: Build local candidate (no registry push)
         id: build
         uses: docker/build-push-action@v6
         with:
           context: .
           file: Dockerfile
           platforms: ${{ matrix.platform }}
-          labels: ${{ steps.meta.outputs.labels }}
-          tags: ${{ steps.meta.outputs.tags }}
+          tags: percival-osm:ci
+          build-args: |
+            VERSION=${{ steps.version.outputs.version }}
+            GIT_SHA=${{ github.sha }}
           # BuildKit cache for CI: cache-to-the-bucket
           cache-from: type=gha
           cache-to: type=gha,mode=max
           load: ${{ matrix.platform == 'linux/amd64' }}
 
-      - name: Smoke test (linux/amd64 only)
-        if: matrix.platform == 'linux/amd64' && steps.build.outputs.digest
+      - name: Smoke test (linux/amd64)
+        if: matrix.platform == 'linux/amd64'
+        env:
+          IMAGE: percival-osm:ci
+          USER_AGENT: smoke-test/1.0 (ci@example.invalid)
+          FROM_HEADER: ci@example.invalid
+          MCP_OSM_AUTH_TOKEN: ci-osm-token-not-a-secret
+          OSM_NOMINATIM_RATE_LIMIT_RPS: "0"
         run: |
-          # The build above loaded the image as ${{ env.IMAGE_NAME }}:branch
-          # so the smoke script can pick it up via $IMAGE.
-          IMAGE="${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}" \
-            scripts/docker-smoke-test.sh
+          python3 scripts/docker-ci-conformance.py \
+            --image "$IMAGE" \
+            --env "USER_AGENT=$USER_AGENT" \
+            --env "FROM_HEADER=$FROM_HEADER" \
+            --secret-env "MCP_OSM_AUTH_TOKEN=$MCP_OSM_AUTH_TOKEN" \
+            --expected-tool osm_get_version \
+            --expected-uid 10001 \
+            --compose-service mcp-osm
+          scripts/docker-smoke-test.sh
+      - name: Render Compose stdio and HTTP contracts
+        env:
+          USER_AGENT: ci/1.0 (ci@example.invalid)
+          FROM_HEADER: ci@example.invalid
+          MCP_OSM_AUTH_TOKEN: ci-osm-token-not-a-secret
+          HTTP_PORT: "18080"
+        run: |
+          docker compose config --quiet
+          docker compose --profile http config --quiet
+      - name: Write build manifest
+        if: matrix.platform == 'linux/amd64'
+        run: python3 scripts/write_docker_ci_manifest.py --image percival-osm:ci --source-sha "$GITHUB_SHA" --lock uv.lock --output docker-build-manifest.json
+      - name: Generate CycloneDX SBOM
+        if: matrix.platform == 'linux/amd64'
+        uses: anchore/sbom-action@v0
+        with:
+          image: percival-osm:ci
+          format: cyclonedx-json
+          output-file: sbom.cdx.json
+          upload-artifact: false
+      - name: Upload image evidence
+        if: matrix.platform == 'linux/amd64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-evidence-osm-${{ github.sha }}
+          path: |
+            docker-build-manifest.json
+            sbom.cdx.json
+          if-no-files-found: error
 
   # ---------------------------------------------------------------------------
   # 2. Catalog-schema sanity check. Static-only — runs without a Docker daemon.
@@ -81,10 +108,27 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: astral-sh/setup-uv@v4
         with:
-          python-version: "3.12"
-      - name: Install PyYAML
-        run: pip install pyyaml
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+      - run: uv sync --locked --group dev
       - name: Validate server.yaml + tools.json
         run: uv run pytest tests/test_d6_docker.py -v
+
+  test:
+    name: Python tests
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+      - run: uv sync --locked --group dev
+      - run: uv run pytest -v
