@@ -31,3 +31,5 @@ wheels/
 # Coverage
 .coverage
 htmlcov/
+# Local Percival integration working note (not for the public repo)
+docs/percival-integration.md
