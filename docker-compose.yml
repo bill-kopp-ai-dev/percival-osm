@@ -12,6 +12,7 @@
 # tools, etc). Start it with:
 #
 #   docker compose --profile http up -d
+#   Stdio clients should use `docker compose run --rm -T mcp-osm`.
 #
 # All settings come from environment variables. The .env.example file lists
 # every variable the server understands.
