@@ -70,12 +70,18 @@ RUN UV_PROJECT_ENVIRONMENT=/build/.venv \
 # -----------------------------------------------------------------------------
 FROM python:3.12-slim-bookworm AS runtime
 
+ARG VERSION=0.0.0
+ARG GIT_SHA=unknown
+
 # https://github.com/opencontainers/image-spec/blob/main/annotations.md
 LABEL org.opencontainers.image.title="percival-osm" \
       org.opencontainers.image.description="Percival OSM MCP server — hardened OpenStreetMap / OpenRouteService bridge for AI agents" \
       org.opencontainers.image.source="https://github.com/bill-kopp-ai-dev/percival-osm" \
+      org.opencontainers.image.documentation="https://github.com/bill-kopp-ai-dev/percival-osm/blob/main/README.md" \
       org.opencontainers.image.licenses="MIT" \
-      org.opencontainers.image.vendor="percival.OS" \
+      org.opencontainers.image.vendor="Positronic Bean Labs" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.revision="${GIT_SHA}" \
       io.modelcontextprotocol.server.name="io.github.bill-kopp-ai-dev/percival-osm"
 
 # Create the non-root user up-front so ownership on COPY targets is stable.

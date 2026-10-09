@@ -21,7 +21,7 @@ x-base-config: &base-config
   build:
     context: .
     dockerfile: Dockerfile
-  image: percival-osm:local
+  image: percival-osm:dev
   pull_policy: build
   user: "10001:10001"
   read_only: true
@@ -63,7 +63,6 @@ services:
   # launching client, not bound to host ports.
   # ---------------------------------------------------------------------------
   mcp-osm:
-    container_name: percival-osm
     <<: *base-config
     command: ["stdio"]
     restart: "no"
@@ -81,7 +80,6 @@ services:
   # and remote deployments. Enable with: ``--profile http``.
   # ---------------------------------------------------------------------------
   mcp-osm-http:
-    container_name: percival-osm-http
     <<: *base-config
     profiles: ["http"]
     command: ["streamable-http"]

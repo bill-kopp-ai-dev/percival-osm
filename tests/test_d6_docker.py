@@ -117,6 +117,7 @@ def test_compose_stdio_is_non_tty_without_http_health_or_restart() -> None:
 
     compose = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
     service = compose["services"]["mcp-osm"]
+    assert "container_name" not in service
     assert service["stdin_open"] is True
     assert service["tty"] is False
     assert service["restart"] == "no"
@@ -129,6 +130,7 @@ def test_compose_http_profile_keeps_auth_bind_and_health_probe() -> None:
 
     compose = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
     service = compose["services"]["mcp-osm-http"]
+    assert "container_name" not in service
     environment = service["environment"]
     probe = " ".join(service["healthcheck"]["test"])
     assert service["profiles"] == ["http"]

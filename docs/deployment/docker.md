@@ -120,7 +120,7 @@ docker run --rm -i \
   -e USER_AGENT='percival-osm/0.5.0 (you@example.com)' \
   -e FROM_HEADER='you@example.com' \
   -e ORS_API_KEY='eyJvcmciOi...' \
-  percival-osm:local
+  percival-osm:dev
 ```
 
 `--rm` cleans up the container on exit, `-i` keeps stdin open for the
@@ -139,7 +139,7 @@ docker run --rm -p 8080:8080 \
   -e MODE=streamable-http \
   -e ALLOW_REMOTE_HTTP=true \
   -e MCP_OSM_AUTH_TOKEN="$(openssl rand -hex 32)" \
-  percival-osm:local
+  percival-osm:dev
 ```
 
 The MCP endpoint is exposed at `http://127.0.0.1:8080/mcp`. The
@@ -158,7 +158,7 @@ docker run --rm -p 8080:8080 \
   -e MODE=sse \
   -e ALLOW_REMOTE_HTTP=true \
   -e MCP_OSM_AUTH_TOKEN="$(openssl rand -hex 32)" \
-  percival-osm:local
+  percival-osm:dev
 ```
 
 SSE is on `/sse` + `/messages/`; streamable-HTTP is on `/mcp`.
@@ -182,7 +182,7 @@ docs for the exact path of the config file.
           "-e", "USER_AGENT=percival-osm/0.5.0 (you@example.com)",
           "-e", "FROM_HEADER=you@example.com",
           "-e", "ORS_API_KEY=${OPENROUTESERVICE_API_KEY}",
-          "percival-osm:local"
+          "percival-osm:dev"
         ],
         "enabledTools": [
           "osm_find_nearby",
@@ -216,7 +216,7 @@ secret never lands in the JSON file itself.
         "docker", "run", "--rm", "-i",
         "-e", "USER_AGENT=percival-osm/0.5.0 (you@example.com)",
         "-e", "FROM_HEADER=you@example.com",
-        "percival-osm:local"
+        "percival-osm:dev"
       ]
     }
   }
@@ -225,7 +225,7 @@ secret never lands in the JSON file itself.
 
 ### Claude Desktop
 
-Add the same `docker run … percival-osm:local` invocation under
+Add the same `docker run … percival-osm:dev` invocation under
 `mcpServers.percival-osm` in
 `~/Library/Application Support/Claude/claude_desktop_config.json`
 (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows).
@@ -310,7 +310,7 @@ The server respects `OSM_LOG_FORMAT=plain|json` and
 docker run --rm -i \
   -e OSM_LOG_FORMAT=json -e OSM_LOG_LEVEL=INFO \
   -e USER_AGENT=... -e FROM_HEADER=... \
-  percival-osm:local |& jq
+  percival-osm:dev |& jq
 ```
 
 ### Cache lifecycle
@@ -343,7 +343,7 @@ For raw `docker run`, pass `--cpus` and `--memory`:
 ```bash
 docker run --rm -i --cpus=2 --memory=2g \
   -e USER_AGENT=... -e FROM_HEADER=... \
-  percival-osm:local
+  percival-osm:dev
 ```
 
 ## Troubleshooting

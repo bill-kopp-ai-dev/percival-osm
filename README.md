@@ -285,8 +285,8 @@ opencode, Claude Desktop, the Docker MCP Toolkit — without extra glue.
 ### Quick start — stdio (the common case)
 
 ```bash
-# Build the local image (multi-arch buildx; <30s with cache, ~2m cold)
-scripts/docker-build.sh
+# Build the :dev alias with version/revision derived from this checkout
+python /home/bill/Projects/nanobot/scripts/percival-docker-build.py osm --dev-alias
 
 # Run interactively as an MCP stdio server. Wire this command into the
 # client of your choice under ``mcpServers.percival-osm`` — see the
@@ -294,7 +294,7 @@ scripts/docker-build.sh
 docker run --rm -i \
   -e USER_AGENT='percival-osm/0.4.1 (you@example.com)' \
   -e FROM_HEADER='you@example.com' \
-  percival-osm:local
+  percival-osm:dev
 ```
 
 ### Quick start — docker compose
@@ -344,7 +344,7 @@ configurable UI fields, so operators don't need to edit a `.env`.
           "-e", "USER_AGENT=percival-osm/0.4.1 (you@example.com)",
           "-e", "FROM_HEADER=you@example.com",
           "-e", "ORS_API_KEY=${OPENROUTESERVICE_API_KEY}",
-          "percival-osm:local"
+          "percival-osm:dev"
         ]
       }
     }
@@ -363,7 +363,7 @@ configurable UI fields, so operators don't need to edit a `.env`.
         "docker", "run", "--rm", "-i",
         "-e", "USER_AGENT=percival-osm/0.4.1 (you@example.com)",
         "-e", "FROM_HEADER=you@example.com",
-        "percival-osm:local"
+        "percival-osm:dev"
       ]
     }
   }
@@ -371,7 +371,7 @@ configurable UI fields, so operators don't need to edit a `.env`.
 ```
 
 **Claude Desktop / generic stdio MCP**: configure the same
-`docker run --rm -i … percival-osm:local` invocation under
+`docker run --rm -i … percival-osm:dev` invocation under
 `mcpServers.percival-osm`.
 
 ### Image security baseline
