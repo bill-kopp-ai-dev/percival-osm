@@ -34,18 +34,21 @@
 # -----------------------------------------------------------------------------
 # Stage 1: builder
 # -----------------------------------------------------------------------------
-FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS builder
+FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim@sha256:5d275ca5f0da33c3368ac8fbb85fafabad023b3b8a7cff39a94ac0baecfd9a50 AS builder
 
 WORKDIR /build
 
 # Install build deps for any wheel that needs compiling (httpx, pydantic, etc).
 # These are discarded in the runtime stage so the final image stays slim.
-RUN apt-get update && \
+ARG DEBIAN_SNAPSHOT=20261009T000000Z
+RUN printf 'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/%s bookworm main\n' "$DEBIAN_SNAPSHOT" > /etc/apt/sources.list && \
+    printf 'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian-security/%s bookworm-security main\n' "$DEBIAN_SNAPSHOT" >> /etc/apt/sources.list && \
+    rm -f /etc/apt/sources.list.d/debian.sources && \
+    apt-get -o Acquire::Check-Valid-Until=false update && \
+    apt-get upgrade -y --no-install-recommends && \
     apt-get install -y --no-install-recommends \
-        build-essential \
-        gcc \
-        libffi-dev \
-    && rm -rf /var/lib/apt/lists/*
+        build-essential=12.9 gcc=4:12.2.0-3 libffi-dev=3.4.4-1 && \
+    rm -rf /var/lib/apt/lists/*
 
 # Copy only what `uv sync` needs to resolve the lockfile so this layer
 # is cached across source-only edits.
@@ -68,8 +71,9 @@ RUN UV_PROJECT_ENVIRONMENT=/build/.venv \
 # -----------------------------------------------------------------------------
 # Stage 2: runtime
 # -----------------------------------------------------------------------------
-FROM python:3.12-slim-bookworm AS runtime
+FROM python:3.12-slim-bookworm@sha256:2ed6491b93cd49272ee6de2b5a38440c3448360322c089fc23e370722d74179d AS runtime
 
+ARG DEBIAN_SNAPSHOT=20261009T000000Z
 ARG VERSION=0.0.0
 ARG GIT_SHA=unknown
 
@@ -105,13 +109,17 @@ COPY --chown=percival:percival docker-entrypoint.sh /usr/local/bin/docker-entryp
 # reaper — the upstream recommends tini for MCP servers), curl (for the
 # HEALTHCHECK below) and bash (the entrypoint uses bash arrays to thread
 # flags through to the Python module).
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-        bash \
-        ca-certificates \
-        curl \
-        tini \
-    && rm -rf /var/lib/apt/lists/* && \
+RUN printf 'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/%s bookworm main\n' "$DEBIAN_SNAPSHOT" > /etc/apt/sources.list \
+    && printf 'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian-security/%s bookworm-security main\n' "$DEBIAN_SNAPSHOT" >> /etc/apt/sources.list \
+    && rm -f /etc/apt/sources.list.d/debian.sources \
+    && apt-get -o Acquire::Check-Valid-Until=false update \
+    && apt-get install -y --no-install-recommends \
+        bash=5.2.15-2+b13 \
+        ca-certificates=20250419~deb12u1 \
+        curl=7.88.1-10+deb12u15 \
+        tini=0.19.0-1+b3 \
+    && apt-get upgrade -y --no-install-recommends && \
+    rm -rf /var/lib/apt/lists/* && \
     chmod +x /usr/local/bin/docker-entrypoint.sh
 
 WORKDIR /app

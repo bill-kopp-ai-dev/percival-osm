@@ -28,6 +28,11 @@ htmlcov
 .env
 .env.*
 !.env.example
+*.pem
+*.key
+secrets/
+logs/
+.cache/
 
 # Tests + tooling output (image is for runtime, not test)
 tests
