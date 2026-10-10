@@ -53,7 +53,7 @@ ghcr.io/astral-sh/uv:python3.12-bookworm-slim   ← builder stage
 │   uv pip install --no-deps /build             ← wheel install
 │
 └─▶ python:3.12-slim-bookworm                   ← runtime stage
-        bash, ca-certificates, curl, tini
+        bash, ca-certificates, tini
         USER percival (uid 10001)
         ENTRYPOINT ["/usr/bin/tini", "--", "docker-entrypoint.sh"]
         no image healthcheck; HTTP Compose profile probes listener

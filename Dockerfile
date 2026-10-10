@@ -104,18 +104,17 @@ COPY --chown=percival:percival src /app/src
 COPY --chown=percival:percival docs /app/docs
 COPY --chown=percival:percival docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
-# Strip the build-only system packages we needed in the builder stage. The
-# runtime image only needs ca-certificates (for TLS upstreams), tini (PID 1
-# reaper — the upstream recommends tini for MCP servers), curl (for the
-# HEALTHCHECK below) and bash (the entrypoint uses bash arrays to thread
-# flags through to the Python module).
+# Strip the build-only system packages we needed in the builder stage. Runtime
+# keeps ca-certificates for TLS, tini as PID 1, and bash for the entrypoint.
 RUN printf 'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/%s trixie main\n' "$DEBIAN_SNAPSHOT" > /etc/apt/sources.list \
     && printf 'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian-security/%s trixie-security main\n' "$DEBIAN_SNAPSHOT" >> /etc/apt/sources.list \
     && rm -f /etc/apt/sources.list.d/debian.sources \
     && apt-get -o Acquire::Check-Valid-Until=false update \
     && apt-get install -y --no-install-recommends \
-        bash=5.2.37-2+b10 ca-certificates=20250419 curl=8.14.1-2+deb13u5 tini=0.19.0-3+b8 \
+        bash=5.2.37-2+b10 ca-certificates=20250419 tini=0.19.0-3+b8 \
     && apt-get upgrade -y --no-install-recommends && \
+    chmod u-s /usr/bin/mount && \
+    rm -f /usr/bin/nsenter /usr/bin/infocmp && \
     rm -rf /var/lib/apt/lists/* && \
     chmod +x /usr/local/bin/docker-entrypoint.sh
 

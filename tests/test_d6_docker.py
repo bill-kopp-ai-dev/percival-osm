@@ -139,8 +139,9 @@ def test_compose_http_profile_keeps_auth_bind_and_health_probe() -> None:
     assert environment["FROM_HEADER"].startswith("${FROM_HEADER:?")
     assert environment["MCP_OSM_AUTH_TOKEN"].startswith("${MCP_OSM_AUTH_TOKEN:?")
     assert environment["ALLOW_REMOTE_HTTP"] == "true"
-    assert "http://127.0.0.1:8080/" in probe
-    assert "200|401|404|405" in probe
+    assert "HTTPConnection" in probe
+    assert "127.0.0.1" in probe and "8080" in probe
+    assert "200,401,404,405" in probe
     assert "pgrep" not in probe
 
 

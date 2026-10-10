@@ -180,7 +180,7 @@ HTTP_TOKEN="f1-smoke-token-$$"
 HTTP_CID=$(docker run -d \
     --name "${HTTP_NAME}" \
     -p 127.0.0.1::8080 \
-    --health-cmd 'code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 "http://127.0.0.1:8080/" || echo "000"); case "$code" in 200|401|404|405) exit 0 ;; *) exit 1 ;; esac' \
+    --health-cmd 'python -c "import http.client,sys; c=http.client.HTTPConnection(\"127.0.0.1\",8080,timeout=3); c.request(\"GET\",\"/\"); s=c.getresponse().status; sys.exit(0 if s in (200,401,404,405) else 1)"' \
     --health-interval=2s \
     --health-timeout=5s \
     --health-retries=3 \
