@@ -34,20 +34,20 @@
 # -----------------------------------------------------------------------------
 # Stage 1: builder
 # -----------------------------------------------------------------------------
-FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim@sha256:5d275ca5f0da33c3368ac8fbb85fafabad023b3b8a7cff39a94ac0baecfd9a50 AS builder
+FROM ghcr.io/astral-sh/uv:0.9.30-python3.12-trixie-slim@sha256:eacce4ec0ff855c8be0cca407d8c5e8e20139dd3f8f64c018fb654bac0a40bd8 AS builder
 
 WORKDIR /build
 
 # Install build deps for any wheel that needs compiling (httpx, pydantic, etc).
 # These are discarded in the runtime stage so the final image stays slim.
 ARG DEBIAN_SNAPSHOT=20261009T000000Z
-RUN printf 'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/%s bookworm main\n' "$DEBIAN_SNAPSHOT" > /etc/apt/sources.list && \
-    printf 'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian-security/%s bookworm-security main\n' "$DEBIAN_SNAPSHOT" >> /etc/apt/sources.list && \
+RUN printf 'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/%s trixie main\n' "$DEBIAN_SNAPSHOT" > /etc/apt/sources.list && \
+    printf 'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian-security/%s trixie-security main\n' "$DEBIAN_SNAPSHOT" >> /etc/apt/sources.list && \
     rm -f /etc/apt/sources.list.d/debian.sources && \
     apt-get -o Acquire::Check-Valid-Until=false update && \
     apt-get upgrade -y --no-install-recommends && \
     apt-get install -y --no-install-recommends \
-        build-essential=12.9 gcc=4:12.2.0-3 libffi-dev=3.4.4-1 && \
+        build-essential=12.12 gcc=4:14.2.0-1 libffi-dev=3.4.8-2 && \
     rm -rf /var/lib/apt/lists/*
 
 # Copy only what `uv sync` needs to resolve the lockfile so this layer
@@ -71,7 +71,7 @@ RUN UV_PROJECT_ENVIRONMENT=/build/.venv \
 # -----------------------------------------------------------------------------
 # Stage 2: runtime
 # -----------------------------------------------------------------------------
-FROM python:3.12-slim-bookworm@sha256:2ed6491b93cd49272ee6de2b5a38440c3448360322c089fc23e370722d74179d AS runtime
+FROM python:3.12-slim-trixie@sha256:2b4f19dae3a777dfc3b76730bda1e82e1f66ab2a2686fa93ca78edbfb4f04ffe AS runtime
 
 ARG DEBIAN_SNAPSHOT=20261009T000000Z
 ARG VERSION=0.0.0
@@ -109,15 +109,12 @@ COPY --chown=percival:percival docker-entrypoint.sh /usr/local/bin/docker-entryp
 # reaper — the upstream recommends tini for MCP servers), curl (for the
 # HEALTHCHECK below) and bash (the entrypoint uses bash arrays to thread
 # flags through to the Python module).
-RUN printf 'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/%s bookworm main\n' "$DEBIAN_SNAPSHOT" > /etc/apt/sources.list \
-    && printf 'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian-security/%s bookworm-security main\n' "$DEBIAN_SNAPSHOT" >> /etc/apt/sources.list \
+RUN printf 'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/%s trixie main\n' "$DEBIAN_SNAPSHOT" > /etc/apt/sources.list \
+    && printf 'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian-security/%s trixie-security main\n' "$DEBIAN_SNAPSHOT" >> /etc/apt/sources.list \
     && rm -f /etc/apt/sources.list.d/debian.sources \
     && apt-get -o Acquire::Check-Valid-Until=false update \
     && apt-get install -y --no-install-recommends \
-        bash=5.2.15-2+b13 \
-        ca-certificates=20250419~deb12u1 \
-        curl=7.88.1-10+deb12u15 \
-        tini=0.19.0-1+b3 \
+        bash=5.2.37-2+b10 ca-certificates=20250419 curl=8.14.1-2+deb13u5 tini=0.19.0-3+b8 \
     && apt-get upgrade -y --no-install-recommends && \
     rm -rf /var/lib/apt/lists/* && \
     chmod +x /usr/local/bin/docker-entrypoint.sh

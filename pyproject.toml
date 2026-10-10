@@ -9,7 +9,7 @@ description = "Percival OSM MCP server for geospatial search and routing"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-  "mcp[cli]>=1.12.0",
+  "mcp[cli]>=1.28.1,<2.0.0",
   "httpx>=0.28.1",
   "openrouteservice>=2.3.3",
   "pydantic-settings>=2.10.1",
