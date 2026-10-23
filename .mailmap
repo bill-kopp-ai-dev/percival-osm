@@ -1,0 +1,29 @@
+# .mailmap — atribuição de identidade do repositório Percival
+#
+# Somente identidades atribuídas ao mesmo operador entram aqui. A base da
+# atribuição está no relatório de proveniência
+# (nanobot/docs/reports/2026-10-10-f7-provenance-and-identity.md):
+#
+#   - vínculo criptográfico via API do GitHub, que resolve o autor do commit
+#     para a conta que o assinou:
+#       bill.kopp.dev@gmail.com          -> conta bill-kopp-ai-dev
+#       whats.up.ai.chat@gmail.com       -> conta bill-kopp (pessoal)
+#       bill-kopp-ai-dev@users.noreply…  -> login da conta bill-kopp-ai-dev
+#   - vínculo documental para os endereços placeholder, que eram a identidade
+#     local configurada do próprio repositório (ver §1 do relatório) e foram
+#     enviados pela conta do operador:
+#       bill@example.com, bill@percival.local, billkopp@example.com
+#
+# Um mapeamento por email cobre todas as grafias de nome usadas nas sessões
+# locais (ex.: "bill", "bill-kopp", "bill-kopp-ai-dev", "Bill Kopp").
+#
+# Não entram neste arquivo:
+#   - identidades de automação local (Positronic, Percival, Trae, bots);
+#   - contribuições externas preservadas (ex.: Daniel Nowak, upstream HKUDS).
+
+Bill Kopp <bill.kopp.dev@gmail.com> <bill.kopp.dev@gmail.com>
+Bill Kopp <bill.kopp.dev@gmail.com> <bill-kopp-ai-dev@users.noreply.github.com>
+Bill Kopp <bill.kopp.dev@gmail.com> <whats.up.ai.chat@gmail.com>
+Bill Kopp <bill.kopp.dev@gmail.com> <bill@example.com>
+Bill Kopp <bill.kopp.dev@gmail.com> <bill@percival.local>
+Bill Kopp <bill.kopp.dev@gmail.com> <billkopp@example.com>
