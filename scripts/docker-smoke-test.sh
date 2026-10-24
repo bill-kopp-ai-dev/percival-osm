@@ -12,7 +12,8 @@
 #   3. The required env-var guard rejects a misconfigured container
 #      with a clear error and a non-zero exit code.
 #   4. Stdio has no Docker healthcheck or TTY; authenticated HTTP starts on
-#      loopback, responds to MCP initialize, and shuts down through one tini.
+#      loopback, responds to MCP initialize, and shuts down through the
+#      single launcher-owned init.
 #
 # Usage:
 #   scripts/docker-smoke-test.sh                 # uses percival-osm:local
@@ -202,10 +203,10 @@ if [ "${HTTP_BIND}" != "127.0.0.1:${HTTP_PORT}" ]; then
     echo "error: HTTP smoke container is not loopback-only: ${HTTP_BIND}" >&2
     exit 1
 fi
-HTTP_PID1=$(docker inspect --format '{{.Path}}' "${HTTP_CID}")
 HTTP_INIT=$(docker inspect --format '{{.HostConfig.Init}}' "${HTTP_CID}")
-if [ "${HTTP_PID1}" != "/usr/bin/tini" ] || [ "${HTTP_INIT}" = "true" ]; then
-    echo "error: expected exactly one init (image tini), Path=${HTTP_PID1}, HostConfig.Init=${HTTP_INIT}" >&2
+HTTP_PID1=$(docker exec "${HTTP_CID}" sh -c "awk '/^Name:/{print \$2}' /proc/1/status")
+if [ "${HTTP_INIT}" != "true" ] || [ "${HTTP_PID1}" != "docker-init" ]; then
+    echo "error: expected the launcher-owned init (HostConfig.Init=true, PID 1 = docker-init), got PID 1=${HTTP_PID1}, HostConfig.Init=${HTTP_INIT}" >&2
     exit 1
 fi
 

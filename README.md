@@ -385,7 +385,7 @@ The shipped image is hardened by construction. The CI workflow at
 | User | `percival` (uid 10001) — non-root by default |
 | `cap_drop` | `ALL` (compose + Toolkit both) |
 | `security_opt` | `no-new-privileges:true` |
-| PID 1 | `tini` (clean signal reaping) |
+| PID 1 | launcher-owned init (`docker run --init` / compose `init: true`) — the image embeds none |
 | Read-only root FS | enforced in compose |
 | `/tmp` | `tmpfs: 64m, mode=1777, noexec, nosuid, nodev` |
 | Resources (compose / Toolkit) | 1 CPU, 1 GB memory cap |
