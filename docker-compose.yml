@@ -25,6 +25,8 @@ x-base-config: &base-config
   image: percival-osm:dev
   pull_policy: build
   user: "10001:10001"
+  # The launcher owns the init layer; the image embeds none. One init only.
+  init: true
   read_only: true
   tmpfs:
     - /tmp:size=64m,mode=1777,noexec,nosuid,nodev

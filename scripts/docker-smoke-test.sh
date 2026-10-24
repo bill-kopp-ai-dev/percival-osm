@@ -54,8 +54,10 @@ if [ "${IMAGE_HEALTHCHECK}" != '["NONE"]' ] && [ "${IMAGE_HEALTHCHECK}" != "null
 fi
 IMAGE_ENTRYPOINT=$(docker image inspect --format '{{json .Config.Entrypoint}}' "${IMAGE}")
 case "${IMAGE_ENTRYPOINT}" in
-    *"/usr/bin/tini"*) ;;
-    *) echo "error: image entrypoint must include the sole tini init: ${IMAGE_ENTRYPOINT}" >&2; exit 1 ;;
+    *tini*|*docker-init*)
+        echo "error: image must not embed an init; the launcher owns it: ${IMAGE_ENTRYPOINT}" >&2
+        exit 1
+        ;;
 esac
 
 run() {
@@ -152,7 +154,7 @@ run "all canonical tools are registered" \
             sleep 0.5
         ) &
 
-        out=$(docker run --rm -i \
+        out=$(docker run --rm -i --init \
             -e USER_AGENT="smoke-test/1.0 (smoke@example.com)" \
             -e FROM_HEADER="smoke@example.com" \
             --network=none \
@@ -174,11 +176,12 @@ run "all canonical tools are registered" \
 
 # ---------------------------------------------------------------------------
 # 5. HTTP profile contract: required auth, loopback binding, explicit
-#    listener health probe, and graceful stop through image tini.
+#    listener health probe, and graceful stop through the single init.
 # ---------------------------------------------------------------------------
 HTTP_TOKEN="f1-smoke-token-$$"
 HTTP_CID=$(docker run -d \
     --name "${HTTP_NAME}" \
+    --init \
     -p 127.0.0.1::8080 \
     --health-cmd 'python -c "import http.client,sys; c=http.client.HTTPConnection(\"127.0.0.1\",8080,timeout=3); c.request(\"GET\",\"/\"); s=c.getresponse().status; sys.exit(0 if s in (200,401,404,405) else 1)"' \
     --health-interval=2s \
@@ -250,5 +253,5 @@ if [ "${HTTP_EXIT}" = "137" ]; then
     echo "error: HTTP server failed to stop before SIGKILL" >&2
     exit 1
 fi
-printf '[smoke] single-tini HTTP shutdown passed (exit=%s)\n' "${HTTP_EXIT}"
+printf '[smoke] single-init HTTP shutdown passed (exit=%s)\n' "${HTTP_EXIT}"
 printf '\n[smoke] all checks passed for %s\n' "${IMAGE}"

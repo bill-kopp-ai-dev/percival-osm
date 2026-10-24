@@ -291,7 +291,7 @@ python /home/bill/Projects/nanobot/scripts/percival-docker-build.py osm --dev-al
 # Run interactively as an MCP stdio server. Wire this command into the
 # client of your choice under ``mcpServers.percival-osm`` — see the
 # per-client snippets below.
-docker run --rm -i \
+docker run --rm -i --init \
   -e USER_AGENT='percival-osm/0.4.1 (you@example.com)' \
   -e FROM_HEADER='you@example.com' \
   percival-osm:dev
@@ -512,7 +512,8 @@ Every blocking or failure path increments a counter exposed via
 - **First-class Docker support**:
   - Multi-stage Dockerfile (`ghcr.io/astral-sh/uv:python3.12-bookworm-slim`
     builder → `python:3.12-slim-bookworm` runtime, ~249 MB uncompressed).
-  - Hardened: non-root user (uid 10001), `tini` as PID 1, `cap_drop ALL`,
+  - Hardened: non-root user (uid 10001), launcher-owned init (the image
+    embeds none), `cap_drop ALL`,
     `no-new-privileges`, `read_only: true` root FS, `tmpfs /tmp` with
     `noexec,nosuid,nodev`, `HEALTHCHECK` covering both stdio and HTTP modes.
   - `docker-entrypoint.sh` validates `USER_AGENT` + `FROM_HEADER` and

@@ -2,7 +2,7 @@
 
 These tests are pure-Python: they validate the *static* properties of the
 deployment files (existence, structure, expected configuration values) so
-that simple mistakes like removing the tini init, dropping the
+that simple mistakes like embedding a second init, dropping the
 non-root user, or hardcoding a token default are caught in CI without
 needing a Docker daemon.
 """
@@ -59,10 +59,36 @@ def test_stdio_image_disables_transport_agnostic_healthcheck() -> None:
     assert "pgrep" not in content, "the runtime image must not depend on pgrep"
 
 
-def test_dockerfile_uses_tini_for_signal_reaping() -> None:
+def test_dockerfile_embeds_no_init_so_the_launcher_owns_it() -> None:
+    """The image must not embed an init.
+
+    The init layer belongs to the launcher (``docker run --init`` / Compose
+    ``init: true``). A tini embedded in the image stacks a second supervision
+    layer on top of the launcher's own init, and the outer layer masks which
+    process is actually responsible for SIGTERM.
+    """
     content = DOCKERFILE.read_text(encoding="utf-8")
-    assert "tini" in content, "PID 1 reaper (tini) is required for clean signal handling"
-    assert "/usr/bin/tini" in content, "tini must be the ENTRYPOINT, not just installed"
+    instructions = "\n".join(
+        line for line in content.splitlines() if not line.lstrip().startswith("#")
+    )
+    assert "tini" not in instructions, (
+        "the image must not embed an init; the launcher provides it "
+        "(docker run --init / compose init: true)"
+    )
+    entrypoint = re.search(r"^ENTRYPOINT\s+\[(.+)\]$", content, re.MULTILINE)
+    assert entrypoint, "Dockerfile must declare an exec-form ENTRYPOINT"
+    assert "tini" not in entrypoint.group(1)
+
+
+def test_compose_declares_the_single_init() -> None:
+    import yaml
+
+    compose = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
+    service = compose["services"]["mcp-osm"]
+    assert service["init"] is True, (
+        "the compose service must declare init: true so the launcher owns "
+        "the init layer and the container stops cleanly on SIGTERM"
+    )
 
 
 def test_dockerfile_drops_capabilities_in_compose() -> None:

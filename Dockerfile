@@ -105,13 +105,18 @@ COPY --chown=percival:percival docs /app/docs
 COPY --chown=percival:percival docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
 # Strip the build-only system packages we needed in the builder stage. Runtime
-# keeps ca-certificates for TLS, tini as PID 1, and bash for the entrypoint.
+# keeps ca-certificates for TLS and bash for the entrypoint.
+#
+# The image deliberately embeds no init: the launcher owns the init layer
+# (``docker run --init`` / Compose ``init: true``). A tini embedded here plus
+# the launcher's own init would stack two supervision layers, and the outer
+# one masks which process is actually responsible for SIGTERM.
 RUN printf 'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/%s trixie main\n' "$DEBIAN_SNAPSHOT" > /etc/apt/sources.list \
     && printf 'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian-security/%s trixie-security main\n' "$DEBIAN_SNAPSHOT" >> /etc/apt/sources.list \
     && rm -f /etc/apt/sources.list.d/debian.sources \
     && apt-get -o Acquire::Check-Valid-Until=false update \
     && apt-get install -y --no-install-recommends \
-        bash=5.2.37-2+b10 ca-certificates=20250419 tini=0.19.0-3+b8 \
+        bash=5.2.37-2+b10 ca-certificates=20250419 \
     && apt-get upgrade -y --no-install-recommends && \
     chmod u-s /usr/bin/mount && \
     rm -f /usr/bin/nsenter /usr/bin/infocmp && \
@@ -141,7 +146,8 @@ EXPOSE 8080
 # its own listener probe; it never checks an upstream API.
 HEALTHCHECK NONE
 
-# tini reaps zombies and forwards signals; the entrypoint validates env,
-# drops to a known state, and exec's the MCP server.
-ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/docker-entrypoint.sh"]
+# The entrypoint validates env, drops to a known state, and exec's the MCP
+# server. The init layer belongs to the launcher (``docker run --init``),
+# so this image must not embed a second one.
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["stdio"]
