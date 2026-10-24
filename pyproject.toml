@@ -12,7 +12,7 @@ dependencies = [
   "mcp[cli]>=1.28.1,<2.0.0",
   "httpx>=0.28.1",
   "openrouteservice>=2.3.3",
-  "pydantic-settings>=2.10.1",
+  "pydantic-settings>=2.14.2",
   "starlette>=0.45.0",
   "uvicorn>=0.34.0",
 ]
