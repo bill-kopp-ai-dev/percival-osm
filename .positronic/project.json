@@ -1,0 +1,6 @@
+{
+  "schemaVersion": 1,
+  "displayName": "Percival OSM",
+  "createdAt": 1791202298370,
+  "description": "Servidor MCP que conecta assistentes de IA ao OpenStreetMap — buscas geoespaciais, descoberta de POIs e navegação passo a passo dentro do ecossistema percival.OS."
+}
