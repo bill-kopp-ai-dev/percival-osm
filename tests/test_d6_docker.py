@@ -161,13 +161,18 @@ def test_compose_http_profile_keeps_auth_bind_and_health_probe() -> None:
     probe = " ".join(service["healthcheck"]["test"])
     assert service["profiles"] == ["http"]
     assert service["ports"] == ["${HTTP_BIND_ADDRESS:-127.0.0.1}:${HTTP_PORT:-8080}:8080"]
-    assert environment["USER_AGENT"].startswith("${USER_AGENT:?")
-    assert environment["FROM_HEADER"].startswith("${FROM_HEADER:?")
-    assert environment["MCP_OSM_AUTH_TOKEN"].startswith("${MCP_OSM_AUTH_TOKEN:?")
+    assert environment["USER_AGENT"] == "${USER_AGENT:-}"
+    assert environment["FROM_HEADER"] == "${FROM_HEADER:-}"
+    assert "MCP_OSM_AUTH_TOKEN" not in environment
+    assert {secret["source"] for secret in service["secrets"]} >= {
+        "mcp_osm_auth_token",
+        "ors_api_key",
+    }
     assert environment["ALLOW_REMOTE_HTTP"] == "true"
-    assert "HTTPConnection" in probe
+    assert "urllib.request" in probe
+    assert "/run/secrets/mcp_osm_auth_token" in probe
     assert "127.0.0.1" in probe and "8080" in probe
-    assert "200,401,404,405" in probe
+    assert "r.status==200" in probe and "b'jsonrpc'" in probe
     assert "pgrep" not in probe
 
 

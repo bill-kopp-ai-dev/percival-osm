@@ -5,9 +5,8 @@
 #
 # Runs local, no-upstream-call checks against a freshly built image:
 #
-#   1. ``osm_get_version`` is reachable via the MCP stdio transport
-#      (proves the Python entrypoint imports cleanly under the image
-#      user/permissions, and that all 30+ tools register without error).
+#   1. The shared CI conformance probe completes initialize/tools/list without
+#      closing stdin before the server has returned its protocol responses.
 #   2. The container's non-root user is in effect.
 #   3. The required env-var guard rejects a misconfigured container
 #      with a clear error and a non-zero exit code.
@@ -100,83 +99,29 @@ run "missing env vars are rejected" \
     '
 
 # ---------------------------------------------------------------------------
-# 3. ``osm_get_version`` round-trips through the MCP stdio transport.
+# 3. Run the shared conformance probe, which reads each response before sending
+#    the next request and closes stdin only after initialize/tools/list.
 # ---------------------------------------------------------------------------
-run "osm_get_version round-trips via stdio MCP" \
-    env IMAGE="${IMAGE}" bash -c '
-        set -e
-        req=$'\''{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke","version":"0.0.0"}}}'\''
-        req2=$'\''{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}'\''
-        req3=$'\''{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"osm_get_version","arguments":{}}}'\''
-
-        # Use a FIFO so the container sees EOF when we are done writing.
-        fifo=$(mktemp -u)
-        rm -f "${fifo}"
-        mkfifo "${fifo}"
-
-        (
-            sleep 0.5
-            printf "%s\n%s\n%s\n" "${req}" "${req2}" "${req3}" >"${fifo}"
-            sleep 0.5
-        ) &
-
-        out=$(docker run --rm -i \
-            -e USER_AGENT="smoke-test/1.0 (smoke@example.com)" \
-            -e FROM_HEADER="smoke@example.com" \
-            -e OSM_HTTP_TIMEOUT_SECONDS=2 \
-            -e OSM_NOMINATIM_RATE_LIMIT_RPS=0 \
-            --network=none \
-            "${IMAGE}" <"${fifo}" 2>/dev/null || true)
-        rm -f "${fifo}"
-
-        # The response body for osm_get_version is a JSON string containing
-        # the server name and a "Version snapshot" message.
-        echo "${out}" | grep -q "percival-osm" \
-            && echo "${out}" | grep -q "Version snapshot"
-    '
+run "stdio MCP initialize and canonical tools/list" \
+    python3 scripts/docker-ci-conformance.py \
+        --image "${IMAGE}" \
+        --env 'USER_AGENT=smoke-test/1.0 (smoke@example.invalid)' \
+        --env FROM_HEADER=smoke@example.invalid \
+        --env OSM_HTTP_TIMEOUT_SECONDS=2 \
+        --env OSM_NOMINATIM_RATE_LIMIT_RPS=0 \
+        --expected-uid 10001 \
+        --expected-tool osm_find_nearby \
+        --expected-tool osm_find_place \
+        --expected-tool osm_find_address \
+        --expected-tool osm_geocode \
+        --expected-tool osm_navigate \
+        --expected-tool osm_directions \
+        --expected-tool osm_get_health \
+        --expected-tool osm_get_version \
+        --expected-tool osm_get_security_metrics
 
 # ---------------------------------------------------------------------------
-# 4. All canonical tools register through the MCP stdio transport.
-# ---------------------------------------------------------------------------
-run "all canonical tools are registered" \
-    env IMAGE="${IMAGE}" bash -c '
-        set -e
-        req1=$'\''{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke","version":"0.0.0"}}}'\''
-        req2=$'\''{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}'\''
-        req3=$'\''{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'\''
-
-        fifo=$(mktemp -u)
-        rm -f "${fifo}"
-        mkfifo "${fifo}"
-
-        (
-            sleep 0.5
-            printf "%s\n%s\n%s\n" "${req1}" "${req2}" "${req3}" >"${fifo}"
-            sleep 0.5
-        ) &
-
-        out=$(docker run --rm -i --init \
-            -e USER_AGENT="smoke-test/1.0 (smoke@example.com)" \
-            -e FROM_HEADER="smoke@example.com" \
-            --network=none \
-            "${IMAGE}" <"${fifo}" 2>/dev/null || true)
-        rm -f "${fifo}"
-
-        # The tools/list response carries every tool name. Verify the
-        # canonical ones are present. Legacy aliases are gated behind
-        # OSM_EXPOSE_LEGACY_ALIASES=true (the default), so we accept them.
-        for tool in osm_find_nearby osm_find_place osm_find_address \
-                    osm_geocode osm_navigate osm_directions \
-                    osm_get_health osm_get_version osm_get_security_metrics; do
-            if ! echo "${out}" | grep -q "\"name\":\"${tool}\""; then
-                printf "  missing canonical tool: %s\n" "${tool}"
-                exit 1
-            fi
-        done
-    '
-
-# ---------------------------------------------------------------------------
-# 5. HTTP profile contract: required auth, loopback binding, explicit
+# 4. HTTP profile contract: required auth, loopback binding, explicit
 #    listener health probe, and graceful stop through the single init.
 # ---------------------------------------------------------------------------
 HTTP_TOKEN="f1-smoke-token-$$"
