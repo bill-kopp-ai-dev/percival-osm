@@ -1,3 +1,16 @@
+# Only image inputs, including the MCP security resource, enter the context.
+**
+!pyproject.toml
+!uv.lock
+!README.md
+!LICENSE
+!docker-entrypoint.sh
+!src/
+!src/**
+!docs/
+!docs/security/
+!docs/security/nanobot-policy.md
+
 # Python
 .venv
 __pycache__
@@ -60,10 +73,22 @@ docker-compose.*.yml
 *.md
 !README.md
 
-# License
-LICENSE
-
 # GitHub metadata that may have been copied
 .editorconfig
 .prettierignore
 .eslintrc*
+
+# Apply the state/secret boundary inside copied source trees too.
+**/.venv/
+**/.positronic/
+**/.env
+**/.env.*
+**/secrets/
+**/*.pem
+**/*.key
+**/__pycache__/
+**/.cache/
+**/AGENTS.md
+**/.pytest_cache/
+**/node_modules/
+**/tests/

@@ -63,6 +63,7 @@ RUN mkdir -p src/percival_osm_mcp && \
 # Now copy the application source and finish the install. README is
 # required by hatchling's metadata step (``[project].readme = "README.md"``).
 COPY README.md /build/README.md
+COPY LICENSE /build/LICENSE
 COPY src /build/src
 COPY docs /build/docs
 RUN UV_PROJECT_ENVIRONMENT=/build/.venv \
@@ -108,6 +109,7 @@ RUN groupadd --gid 10001 percival && \
 COPY --from=builder --chown=percival:percival /build/.venv /app/.venv
 COPY --chown=percival:percival src /app/src
 COPY --chown=percival:percival docs /app/docs
+COPY --chown=percival:percival LICENSE /app/LICENSE
 COPY --chown=percival:percival docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
 # Strip the build-only system packages we needed in the builder stage. Runtime
