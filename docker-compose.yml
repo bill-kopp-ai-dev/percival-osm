@@ -2,7 +2,7 @@
 # percival-osm MCP server — docker-compose
 # =============================================================================
 #
-# Default service (mcp-osm-stdio) is configured for stdio transport. Connect
+# Default service (mcp-osm) is configured for stdio transport. Connect
 # it from any MCP-compatible client (nanobot, opencode, claude-code, …) by
 # pointing the client at the running container — see the project README for
 # the exact ``mcpServers.percival-osm`` snippet.
@@ -14,8 +14,9 @@
 #   docker compose --profile http up -d
 #   Stdio clients should use `docker compose run --rm -T mcp-osm`.
 #
-# All settings come from environment variables. The .env.example file lists
-# every variable the server understands.
+# Settings come from the process environment; the server does not load `.env`.
+# The recipe explicitly forwards non-secret settings. The HTTP bearer token is
+# a separate file-backed secret, not an environment value.
 # =============================================================================
 
 x-base-config: &base-config
@@ -47,14 +48,31 @@ x-base-config: &base-config
   environment: &base-environment
     OSM_CACHE_FILE: /cache/osm-cache.json
     OSM_CACHE_ALLOWED_DIRS: /cache
+    NOMINATIM_URL: ${NOMINATIM_URL:-https://nominatim.openstreetmap.org/}
+    OVERPASS_TURBO_URL: ${OVERPASS_TURBO_URL:-https://overpass-api.de/api/interpreter}
+    INSTRUCTION_ORIENTED_INTERPRETATION: ${INSTRUCTION_ORIENTED_INTERPRETATION:-true}
+    CAR_ONLY: ${CAR_ONLY:-false}
+    STATUS_INDICATORS: ${STATUS_INDICATORS:-false}
+    OSM_RESPONSE_MODE: ${OSM_RESPONSE_MODE:-compact}
+    ORS_REQUEST_TIMEOUT: ${ORS_REQUEST_TIMEOUT:-90}
+    OSM_HTTP_TIMEOUT_SECONDS: ${OSM_HTTP_TIMEOUT_SECONDS:-12}
+    OSM_HTTP_MAX_RETRIES: ${OSM_HTTP_MAX_RETRIES:-2}
+    OSM_HTTP_RETRY_BACKOFF_SECONDS: ${OSM_HTTP_RETRY_BACKOFF_SECONDS:-0.6}
+    OSM_HTTP_FOLLOW_REDIRECTS: ${OSM_HTTP_FOLLOW_REDIRECTS:-false}
+    OSM_HTTP_MAX_RESPONSE_BYTES: ${OSM_HTTP_MAX_RESPONSE_BYTES:-2000000}
+    OSM_HTTP_MAX_CONCURRENCY: ${OSM_HTTP_MAX_CONCURRENCY:-8}
+    OSM_CACHE_TTL_SECONDS: ${OSM_CACHE_TTL_SECONDS:-3600}
     OSM_LOG_FORMAT: ${OSM_LOG_FORMAT:-plain}
     OSM_LOG_LEVEL: ${OSM_LOG_LEVEL:-INFO}
-    USER_AGENT: ${USER_AGENT:?USER_AGENT must be set (Nominatim usage policy)}
-    FROM_HEADER: ${FROM_HEADER:?FROM_HEADER must be set (Nominatim usage policy)}
-    ORS_API_KEY: ${ORS_API_KEY:-}
+    # The Nominatim usage policy requires both identifiers to be non-empty.
+    # The container entrypoint refuses to start without them (exit 78), so
+    # the recipe does not use the `:?` guard: a hard interpolation error
+    # would break `docker compose config` and the stdio path for operators
+    # who only need the server to render.
+    USER_AGENT: ${USER_AGENT:-}
+    FROM_HEADER: ${FROM_HEADER:-}
     OSM_EXPOSE_LEGACY_ALIASES: ${OSM_EXPOSE_LEGACY_ALIASES:-true}
     OSM_REQUIRE_HTTPS_UPSTREAMS: ${OSM_REQUIRE_HTTPS_UPSTREAMS:-true}
-    OSM_HTTP_FOLLOW_REDIRECTS: ${OSM_HTTP_FOLLOW_REDIRECTS:-false}
     OSM_UPSTREAM_ALLOWED_HOSTS: ${OSM_UPSTREAM_ALLOWED_HOSTS:-nominatim.openstreetmap.org,overpass-api.de,api.openrouteservice.org}
     OSM_NOMINATIM_RATE_LIMIT_RPS: ${OSM_NOMINATIM_RATE_LIMIT_RPS:-1.0}
     OSM_NOMINATIM_RATE_LIMIT_BURST: ${OSM_NOMINATIM_RATE_LIMIT_BURST:-2}
@@ -68,7 +86,19 @@ services:
   mcp-osm:
     <<: *base-config
     command: ["stdio"]
+    # Optional routing credential is read from a file. /dev/null is an empty,
+    # present default, so routing falls back to haversine without extra setup.
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        ORS_API_KEY="$$(cat /run/secrets/ors_api_key)"
+        export ORS_API_KEY
+        exec /usr/local/bin/docker-entrypoint.sh stdio
     restart: "no"
+    secrets:
+      - source: ors_api_key
+        target: ors_api_key
     volumes:
       - percival-cache:/cache
     # Keep stdin available for the MCP client, but never allocate a TTY:
@@ -90,6 +120,26 @@ services:
       # Publish on loopback by default. External binding is an explicit
       # operator choice; this service always requires a bearer token.
       - "${HTTP_BIND_ADDRESS:-127.0.0.1}:${HTTP_PORT:-8080}:8080"
+    entrypoint:
+      # The bearer token is delivered by reference: the mounted file is read
+      # at startup. It is absent from rendered Compose config and the
+      # container-creation environment (`Config.Env`); the process receives it
+      # only after reading the secret file.
+      #
+      # The healthcheck below reads the mounted secret directly.
+      - /bin/sh
+      - -ec
+      - |
+        MCP_OSM_AUTH_TOKEN="$$(cat /run/secrets/mcp_osm_auth_token)"
+        ORS_API_KEY="$$(cat /run/secrets/ors_api_key)"
+        export MCP_OSM_AUTH_TOKEN
+        export ORS_API_KEY
+        exec /usr/local/bin/docker-entrypoint.sh
+    secrets:
+      - source: mcp_osm_auth_token
+        target: mcp_osm_auth_token
+      - source: ors_api_key
+        target: ors_api_key
     environment:
       <<: *base-environment
       MODE: streamable-http
@@ -97,23 +147,49 @@ services:
       # The process binds inside the container's network namespace; the
       # host port remains loopback-only unless explicitly overridden above.
       ALLOW_REMOTE_HTTP: "true"
-      MCP_OSM_AUTH_TOKEN: ${MCP_OSM_AUTH_TOKEN:?MCP_OSM_AUTH_TOKEN must be set for HTTP mode}
+      # The bearer token itself is NOT declared here: it arrives through the
+      # mounted secret above. The server refuses to start a non-loopback HTTP
+      # transport without one ("Remote HTTP mode requires authentication"), so
+      # a missing token fails closed at startup.
     volumes:
       - percival-cache:/cache
     restart: unless-stopped
-    # A response from the app proves listener liveness. 401 is expected
-    # without a bearer token; upstream API availability is not probed.
+    # Liveness of the MCP endpoint itself. The probe performs a real MCP
+    # `initialize` handshake against `/mcp`, so it proves the MCP surface is
+    # serving instead of only proving that a socket is open. The bearer token
+    # is read from the mounted secret at probe time, so it never appears in
+    # the rendered recipe, and no upstream API is contacted.
     healthcheck:
       test:
         - CMD-SHELL
         - >-
-          code=$$(python -c "import http.client,sys; c=http.client.HTTPConnection('127.0.0.1',8080,timeout=3); c.request('GET','/'); s=c.getresponse().status; sys.exit(0 if s in (200,401,404,405) else 1)" 2>/dev/null && echo 200 || echo 000);
-          case "$$code" in 200|401|404|405) exit 0 ;; *) exit 1 ;; esac
+          python -c "import json,sys,urllib.request;
+          body=json.dumps({'jsonrpc':'2.0','id':1,'method':'initialize','params':{'protocolVersion':'2025-06-18','capabilities':{},'clientInfo':{'name':'health','version':'0'}}}).encode();
+          req=urllib.request.Request('http://127.0.0.1:8080/mcp',data=body,method='POST');
+          req.add_header('Content-Type','application/json');
+          req.add_header('Accept','application/json, text/event-stream');
+          req.add_header('Authorization','Bearer '+open('/run/secrets/mcp_osm_auth_token').read().strip());
+          r=urllib.request.urlopen(req,timeout=5);
+          sys.exit(0 if r.status==200 and b'jsonrpc' in r.read() else 1)" 2>/dev/null || exit 1
       interval: 30s
-      timeout: 5s
+      timeout: 10s
       retries: 3
-      start_period: 10s
+      start_period: 15s
 
 volumes:
   percival-cache:
     driver: local
+
+secrets:
+  # Optional OpenRouteService credential: default `/dev/null` means empty and
+  # the server uses its documented haversine fallback. To enable routing,
+  # create a host file readable by UID 10001 (mode 0644 inside a host
+  # directory mode 0700) and set ORS_API_KEY_FILE to its absolute path.
+  ors_api_key:
+    file: ${ORS_API_KEY_FILE:-/dev/null}
+  # Docker Compose (non-swarm) supports file-backed secrets only. Make the
+  # file readable by UID 10001 (e.g. mode 0644) inside a host directory mode
+  # 0700; the mounted secret is read-only and other host users cannot traverse
+  # that directory.
+  mcp_osm_auth_token:
+    file: ${MCP_OSM_AUTH_TOKEN_FILE:-${HOME}/.config/percival/osm_auth_token}
