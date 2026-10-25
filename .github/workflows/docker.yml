@@ -83,7 +83,7 @@ jobs:
           HTTP_PORT: "18080"
         run: |
           printf '%s' 'ci-osm-token-not-a-secret' > "$MCP_OSM_AUTH_TOKEN_FILE"
-          chmod 600 "$MCP_OSM_AUTH_TOKEN_FILE"
+          chmod 0644 "$MCP_OSM_AUTH_TOKEN_FILE"
           docker compose config --quiet
           docker compose --profile http config --quiet
       - name: Write build manifest
