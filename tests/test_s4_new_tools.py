@@ -46,6 +46,7 @@ async def test_geocode_returns_coordinates(monkeypatch) -> None:
             class Resp:
                 headers = {}
                 history = []
+                status_code = 200
                 url = "https://nominatim.openstreetmap.org/search"
                 content = b"[]"
 
@@ -120,7 +121,7 @@ async def test_directions_returns_structured_steps(monkeypatch) -> None:
     monkeypatch.setattr(server_mod, "OsmSearcher", lambda *a, **kw: FakeSearcher())
     monkeypatch.setattr(server_mod, "OrsRouter", lambda *a, **kw: FakeRouter())
 
-    settings = _base_settings()
+    settings = _base_settings(ors_api_key="fixture-key")
     nav = OsmNavigator(settings, user_valves=None)
     result = await nav.directions("A", "B")
 
@@ -137,6 +138,23 @@ async def test_directions_returns_structured_steps(monkeypatch) -> None:
     assert "1." in data["results_markdown"]
     assert "Head north" in data["results_markdown"]
     assert "Turn right" in data["results_markdown"]
+
+
+async def test_directions_reports_missing_ors_provider(monkeypatch) -> None:
+    class FakeSearcher:
+        async def nominatim_search(self, place, limit=1):
+            return [{"lat": 0.0, "lon": 0.0, "display_name": place}]
+
+    class FakeRouter:
+        def calculate_route(self, start, destination):
+            raise AssertionError("routing must not run without ORS credentials")
+
+    monkeypatch.setattr(server_mod, "OsmSearcher", lambda *a, **kw: FakeSearcher())
+    monkeypatch.setattr(server_mod, "OrsRouter", lambda *a, **kw: FakeRouter())
+    result = await OsmNavigator(_base_settings(), user_valves=None).directions("A", "B")
+    payload = json.loads(result)
+    assert payload["status"] == "provider_not_configured"
+    assert "ORS_API_KEY" in payload["message"]
 
 
 async def test_directions_returns_no_results_when_search_empty(monkeypatch) -> None:

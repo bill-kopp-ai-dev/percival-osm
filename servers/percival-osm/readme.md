@@ -37,8 +37,8 @@ Two environment variables are mandatory (OSM Nominatim usage policy):
 
 Optional:
 
-- `ORS_API_KEY` — OpenRouteService key for accurate routing. Without it,
-  the routing tools fall back to haversine distance (less precise).
+- `ORS_API_KEY` — OpenRouteService key required by routing tools. Without it,
+  `osm_navigate` and `osm_directions` return `provider_not_configured`.
 - `MCP_OSM_AUTH_TOKEN` — bearer token for non-loopback HTTP transport.
 - `OSM_EXPOSE_LEGACY_ALIASES` — toggle the 23 per-category legacy tool
   aliases (default true).

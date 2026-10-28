@@ -101,6 +101,7 @@ async def test_http_get_json_uses_follow_redirect_setting_and_size_limit(monkeyp
     class DummyResponse:
         def __init__(self):
             self.headers = {"content-length": "999999"}
+            self.status_code = 200
             self.history = []
             self.url = "https://nominatim.openstreetmap.org/search"
             self.content = b"{}"
@@ -122,8 +123,7 @@ async def test_http_get_json_uses_follow_redirect_setting_and_size_limit(monkeyp
             return None
 
     async def fake_get_http_client(self):
-        # Mirror the production wiring: the shared client is built with
-        # follow_redirects sourced from the searcher's valves.
+        # Redirects are handled one hop at a time after URL policy validation.
         return DummyClient(follow_redirects=self.valves.http_follow_redirects)
 
     monkeypatch.setattr(OsmSearcher, "_get_http_client", fake_get_http_client)
@@ -155,8 +155,9 @@ async def test_http_get_json_validates_redirect_chain(monkeypatch) -> None:
 
     class DummyResponse:
         def __init__(self):
-            self.headers = {"content-length": "2"}
-            self.history = [Hop("https://127.0.0.1/internal")]
+            self.headers = {"content-length": "2", "location": "https://127.0.0.1/internal"}
+            self.status_code = 302
+            self.history = []
             self.url = "https://nominatim.openstreetmap.org/search"
             self.content = b"{}"
 
@@ -171,6 +172,7 @@ async def test_http_get_json_validates_redirect_chain(monkeypatch) -> None:
             pass
 
         async def get(self, url, params=None, headers=None):
+            observed_urls.append(url)
             return DummyResponse()
 
         async def aclose(self):
@@ -182,6 +184,7 @@ async def test_http_get_json_validates_redirect_chain(monkeypatch) -> None:
     monkeypatch.setattr(OsmSearcher, "_get_http_client", fake_get_http_client)
 
     settings = _base_settings(http_follow_redirects=True, http_max_response_bytes=1024)
+    observed_urls = []
     searcher = OsmSearcher(settings, user_valves=None, event_emitter=None)
     with pytest.raises(ValueError, match="private/local host"):
         await searcher._http_get_json(
@@ -189,3 +192,4 @@ async def test_http_get_json_validates_redirect_chain(monkeypatch) -> None:
             params={"q": "x"},
             headers={"User-Agent": "ua", "From": "from@example.com"},
         )
+    assert len(observed_urls) == 1

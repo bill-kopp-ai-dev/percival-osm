@@ -193,8 +193,9 @@ OSM_RESPONSE_MODE=compact               # compact | detailed
 USER_AGENT=percival-osm/0.4.1 (you@example.com)
 FROM_HEADER=you@example.com
 
-# OpenRouteService routing (optional; without it, routing falls back to
-# haversine distance which is less accurate)
+# OpenRouteService routing (required for route/directions tools; without it,
+# those tools return provider_not_configured. Haversine is only used to choose
+# the routing profile when ORS is configured.)
 ORS_API_KEY=...
 ORS_REQUEST_TIMEOUT=90                  # default 90s (lib default is 60s)
 

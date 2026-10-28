@@ -1,7 +1,7 @@
 # Stage-2 — Remediação do Percival OSM MCP
 
 **Data / revisão:** 2026-10-27 / 1.0.  
-**ID / estado:** S2-OS / planejado; execução não iniciada.  
+**ID / estado:** S2-OS / execução parcial local; aceites externos pendentes.
 **Checkout executor:** `/home/bill/Projects/percival-osm`.  
 **Responsável:** executor OSM a designar por bill; mudanças nos gestores com os respectivos donos.
 
@@ -26,11 +26,11 @@ credenciais, publicação e runtime gerido exigem seu escopo/autorização próp
 
 ## 2. Preparação e decisões
 
-- [ ] Ler instruções/README/CI/config atuais; registrar SHA/worktree/toolchain e
+- [x] Ler instruções/README/CI/config atuais; registrar SHA/worktree/toolchain e
   reconciliar docs removidos sem restaurar ou substituir alterações do operador.
-- [ ] Owner decidir A-001: exigir ORS com erro explícito ou fallback haversine
-  **rotulado como distância aproximada**, nunca como rota/tempo real ou instrução
-  de navegação. Recomendação: status de provedor não configurado preserva precisão.
+- [x] Owner decidiu A-001: sem `ORS_API_KEY`, retornar status explícito
+  `provider_not_configured`, nunca distância haversine como rota. Decisão alinhada
+  com a recomendação de preservar precisão.
 - [ ] Reproduzir erro/redirect com servidor fixture controlado; testar ausência de
   requisição no destino não autorizado antes de escolher implementação.
 - [ ] Alinhar S2-C01 (erro/lifecycle/mounts), S2-C03 (metadados/scan) e dimensionar
@@ -106,7 +106,7 @@ externo mantém parcial/bloqueado, não “todos os problemas solucionados”.
 
 | Data / owner | Ações / achados | SHA inicial → final | Mudanças / evidências locais | Resultado / V-* / pendências |
 |---|---|---|---|---|
-| Pendente | A-001–A-013; S2-OS-X01 | A registrar | Nenhuma execução nesta emissão | Não iniciada |
+| 2026-10-27 / bill (owner), Positronic (execução local) | A-001 parcial, A-003 parcial, A-005 local, A-006 parcial, A-007 local, A-009 local, A-010 parcial; A-002/A-004/A-008/A-011/A-012/A-013 e S2-OS-X01 pendentes | `4a71108f3980c033df1a7f9c331402e688ed213a` → SHA de trabalho não commitado | A-001 decidido e comportamento/docs ajustados; A-003 valida `Location` antes de seguir; A-005 deriva versão do pacote e injeta no serverInfo, verificado pelo protocolo MCP (`serverInfo.version=0.5.0`); A-006 wrapper passa VERSION/GIT_SHA/SOURCE_DATE_EPOCH; A-007 captura nome por valor; A-009 falha no boot com URL `/search` (container `exit 1`, mensagem nomeada); A-010 trata bbox ausente/malformado. `./.venv/bin/python -m pytest -v`: 77 passed; compileall, `bash -n` e diff-check aprovados. Build local `scripts/docker-build.sh stage2-candidate`; smoke: non-root, env guard, MCP 37 tools, HTTP auth/health/shutdown aprovados. Imagem local `sha256:bb4d27903912928e51e0129d8202adef5135ff4e8b899268643091d507a11f63`, version `0.5.0`, revision label `unknown` (worktree sujo), created `2026-10-28T00:24:13Z`. `uv` CLI indisponível; executáveis `.venv` usados. | Parcial. A-002 precisa diferenciar falha, 429/5xx/timeout de vazio em todos os payloads. A-003 ainda precisa fixture provando zero requests no destino bloqueado. A-004 precisa comparação real de builds limpos. A-006 requer candidato de SHA limpo para fechar o vínculo. A-008 a nota de integração não existe no worktree e as exclusões foram preservadas; A-011 tracker local de exceções não existe, remoção depende de reconciliação do owner de segurança; A-012 graceful shutdown pendente. A-013 depende de gestores e operação própria autorizada. S2-C01/C03, D-06 e retorno externo pendentes. |
 
 ## 7. Última etapa — atualizar o plano coordenador
 

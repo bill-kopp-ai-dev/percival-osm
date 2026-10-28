@@ -71,9 +71,9 @@ controle do operador.
 - Cumprimento **obrigatório** da política de uso do Nominatim:
   `USER_AGENT` e `FROM_HEADER` não vazios (o servidor aborta com
   `ValueError` se faltarem) e rate-limit 1 req/s + burst 2 respeitado.
-- Dependência opcional do **OpenRouteService** (`ORS_API_KEY`): sem
-  chave, o roteamento cai para distância haversine (menos preciso);
-  documentar essa degradação no operator-facing.
+- Dependência do **OpenRouteService** (`ORS_API_KEY`) para tools de rota:
+  sem chave, retornar `provider_not_configured`; haversine serve apenas para
+  selecionar o perfil quando ORS está configurado.
 - **Licença MIT** já presente; mudanças de licença exigem revisão.
 - Privacidade / soberania: sem tracking comercial; cache confinado a
   `OSM_CACHE_ALLOWED_DIRS` (default `/tmp`); auth obrigatória

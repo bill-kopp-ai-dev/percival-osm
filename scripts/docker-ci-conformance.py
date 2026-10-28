@@ -25,6 +25,7 @@ def main() -> int:
     parser.add_argument("--env", action="append", default=[])
     parser.add_argument("--secret-env", action="append", default=[])
     parser.add_argument("--expected-tool", action="append", default=[])
+    parser.add_argument("--expected-version")
     parser.add_argument("--expected-uid", type=int)
     parser.add_argument("--compose-file", default="docker-compose.yml")
     parser.add_argument("--compose-service")
@@ -207,6 +208,13 @@ def main() -> int:
     tools = by_id.get(2, {}).get("result", {}).get("tools")
     if not isinstance(tools, list) or not tools:
         print("tools/list returned no tools", file=sys.stderr)
+        return 1
+    server_version = by_id[1]["result"].get("serverInfo", {}).get("version")
+    if args.expected_version and server_version != args.expected_version:
+        print(
+            f"server version mismatch: expected {args.expected_version}, got {server_version!r}",
+            file=sys.stderr,
+        )
         return 1
     names = {tool.get("name") for tool in tools if isinstance(tool, dict)}
     missing = sorted(set(args.expected_tool) - names)

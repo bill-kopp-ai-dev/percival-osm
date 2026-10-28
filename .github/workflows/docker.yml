@@ -72,6 +72,7 @@ jobs:
             --env "FROM_HEADER=$FROM_HEADER" \
             --secret-env "MCP_OSM_AUTH_TOKEN=$MCP_OSM_AUTH_TOKEN" \
             --expected-tool osm_get_version \
+            --expected-version "$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')" \
             --expected-uid 10001 \
             --compose-service mcp-osm
           scripts/docker-smoke-test.sh

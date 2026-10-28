@@ -16,6 +16,7 @@ from typing import Any, Annotated, List, Mapping, Optional, Tuple
 from datetime import datetime, timezone
 import functools
 import inspect
+from importlib.metadata import PackageNotFoundError, version as package_version
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -351,7 +352,11 @@ _TOOL_CALL_COUNTS: dict[str, int] = {}
 _TOOL_ERROR_COUNTS: dict[str, int] = {}
 _LAST_UPSTREAM_FAILURE: dict[str, object] = {}  # {kind, message, ts}
 _SERVER_START_TS: float = time.time()
-SERVER_VERSION = "0.4.0"
+try:
+    SERVER_VERSION = package_version("percival-osm")
+except PackageNotFoundError:
+    SERVER_VERSION = "0.0.0"
+mcp._mcp_server.version = SERVER_VERSION
 
 POI_CATEGORY_SPECS: dict[str, dict[str, Any]] = {
     "groceries": {
@@ -691,6 +696,8 @@ def validate_upstream_runtime_configuration(settings: Settings) -> None:
         settings=settings,
         label="nominatim_url",
     )
+    if urlsplit(settings.nominatim_url).path.rstrip("/").endswith("/search"):
+        raise ValueError(OLD_VALVE_SETTING.format(OLD=settings.nominatim_url))
     validate_upstream_url_policy(
         settings.overpass_turbo_url,
         settings=settings,
@@ -1742,7 +1749,7 @@ class OsmSearcher:
                 if self._http_client is None:
                     self._http_client = httpx.AsyncClient(
                         timeout=httpx.Timeout(self.valves.http_timeout_seconds),
-                        follow_redirects=self.valves.http_follow_redirects,
+                        follow_redirects=False,
                     )
         return self._http_client
 
@@ -1783,15 +1790,35 @@ class OsmSearcher:
                     await rate_limiter.acquire()
                 async with self._http_semaphore:
                     client = await self._get_http_client()
-                    response = await client.get(url, params=params, headers=headers)
+                    current_url = url
+                    current_params = params
+                    for _ in range(6):
+                        response = await client.get(
+                            current_url, params=current_params, headers=headers
+                        )
+                        if response.status_code not in {301, 302, 303, 307, 308}:
+                            break
+                        if not self.valves.http_follow_redirects:
+                            break
+                        location = response.headers.get("location")
+                        if not location:
+                            break
+                        next_url = urljoin(str(response.url), location)
+                        validate_upstream_url_policy(
+                            next_url,
+                            settings=self.valves,
+                            label="upstream_redirect_url",
+                        )
+                        current_url = next_url
+                        current_params = {}
+                    else:
+                        raise ValueError("Upstream redirect limit exceeded.")
 
-                redirect_chain = [*response.history, response]
-                for hop in redirect_chain:
-                    validate_upstream_url_policy(
-                        str(hop.url),
-                        settings=self.valves,
-                        label="upstream_redirect_url",
-                    )
+                validate_upstream_url_policy(
+                    str(response.url),
+                    settings=self.valves,
+                    label="upstream_redirect_url",
+                )
 
                 header_content_length = response.headers.get("content-length")
                 if header_content_length:
@@ -2499,12 +2526,20 @@ class OsmSearcher:
 
             await self.event_searching(category, place_display_name, done=False)
 
-            bbox = {
-                "minlat": nominatim_result["boundingbox"][0],
-                "maxlat": nominatim_result["boundingbox"][1],
-                "minlon": nominatim_result["boundingbox"][2],
-                "maxlon": nominatim_result["boundingbox"][3],
-            }
+            raw_bbox = nominatim_result.get("boundingbox")
+            try:
+                if not isinstance(raw_bbox, (list, tuple)) or len(raw_bbox) != 4:
+                    raise ValueError
+                bbox_values = [float(value) for value in raw_bbox]
+                if not all(math.isfinite(value) for value in bbox_values):
+                    raise ValueError
+            except (TypeError, ValueError):
+                return build_tool_response(
+                    status="upstream_error",
+                    message="The place provider returned an incomplete bounding box.",
+                    query=query_payload,
+                )
+            bbox = dict(zip(("minlat", "maxlat", "minlon", "maxlon"), bbox_values))
 
             logger.debug("Searching for %s near %s", category, place_display_name)
             things_nearby = await self.get_things_nearby(
@@ -2864,6 +2899,13 @@ class OsmNavigator:
                 )
 
             start, destination = start[0], destination[0]
+            if not (self.valves.ors_api_key or "").strip():
+                await self.event_navigating(done=True)
+                return build_tool_response(
+                    status="provider_not_configured",
+                    message="OpenRouteService routing is not configured; set ORS_API_KEY to request a route.",
+                    query=query_payload,
+                )
             route = await asyncio.to_thread(router.calculate_route, start, destination)
 
             if not route:
@@ -2977,6 +3019,13 @@ class OsmNavigator:
                 )
 
             start, destination = start[0], destination[0]
+            if not (self.valves.ors_api_key or "").strip():
+                await self.event_navigating(done=True)
+                return build_tool_response(
+                    status="provider_not_configured",
+                    message="OpenRouteService routing is not configured; set ORS_API_KEY to request directions.",
+                    query=query_payload,
+                )
             route = await asyncio.to_thread(router.calculate_route, start, destination)
 
             if not route:
@@ -3559,9 +3608,10 @@ if valves.expose_legacy_aliases:
                 Field(description=_LEGACY_ALIAS_DESCRIPTION),
             ],
             category_key: str = _category_key,
+            tool_name: str = _tool_name,
         ) -> Annotated[str, Field(description=_result_desc)]:
             """Backward-compatible alias delegating to search_category_near_place."""
-            record_tool_call(_tool_name)
+            record_tool_call(tool_name)
             return await search_category_near_place(place=place, category=category_key)
 
         _alias_handler.__name__ = f"find_{_category_key}_near_place_alias"
@@ -3823,6 +3873,7 @@ async def async_main() -> None:
     port = args.port if args.port is not None else int(os.environ.get("PORT", DEFAULT_PORT))
     auth_token = os.environ.get(args.auth_token_env, "").strip() or None
 
+    validate_upstream_runtime_configuration(valves)
     logger.info("Starting Percival OSM MCP server in %s mode...", args.mode)
     await run_server(
         args.mode,

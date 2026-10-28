@@ -44,10 +44,10 @@ if [ -n "${missing}" ]; then
     exit 78  # EX_CONFIG — see sysexits.h
 fi
 
-# Optional but recommended. The server falls back to haversine distance
-# if ORS_API_KEY is empty, so we only warn (never fail) here.
+# Optional routing provider. Without it, route tools return an explicit
+# provider_not_configured result instead of claiming there are no results.
 if [ -z "${ORS_API_KEY:-}" ]; then
-    log "warning: ORS_API_KEY not set — routing tools will fall back to haversine distance"
+    log "warning: ORS_API_KEY not set — routing tools will report provider_not_configured"
 fi
 
 # -----------------------------------------------------------------------------

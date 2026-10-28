@@ -72,13 +72,24 @@ done
 # BuildKit is the default in modern Docker; opt in explicitly for older hosts.
 export DOCKER_BUILDKIT="${DOCKER_BUILDKIT:-1}"
 
+version="$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+git_sha="$(git rev-parse HEAD 2>/dev/null || printf unknown)"
+source_date_epoch="$(git show -s --format=%ct HEAD 2>/dev/null || date -u +%s)"
+if [ -n "$(git status --porcelain 2>/dev/null || true)" ]; then
+    git_sha="unknown"
+fi
+created="$(date -u -d "@${source_date_epoch}" +%Y-%m-%dT%H:%M:%SZ)"
+
 build_args=(buildx build --pull)
 if [ -n "${platforms}" ]; then
     build_args+=(--platform "${platforms}")
 fi
 build_args+=(
-    --label "org.opencontainers.image.revision=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
-    --label "org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    --build-arg "VERSION=${version}"
+    --build-arg "GIT_SHA=${git_sha}"
+    --build-arg "SOURCE_DATE_EPOCH=${source_date_epoch}"
+    --label "org.opencontainers.image.revision=${git_sha}"
+    --label "org.opencontainers.image.created=${created}"
 )
 if [ -n "${load_flag}" ]; then
     build_args+=("${load_flag}")

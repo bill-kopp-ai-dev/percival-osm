@@ -83,6 +83,8 @@ COPY --from=python-runtime /usr/local/lib/libpython3.12.so.1.0 /usr/local/lib/li
 ARG DEBIAN_SNAPSHOT=20261020T000000Z
 ARG VERSION=0.0.0
 ARG GIT_SHA=unknown
+ARG SOURCE_DATE_EPOCH
+ENV SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}
 
 # https://github.com/opencontainers/image-spec/blob/main/annotations.md
 LABEL org.opencontainers.image.title="percival-osm" \

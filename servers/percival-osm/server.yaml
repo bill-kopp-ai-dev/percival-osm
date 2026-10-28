@@ -95,8 +95,10 @@ config:
         type: string
         title: OpenRouteService API key
         description: >-
-          Optional. Routing tools fall back to haversine distance if
-          this is empty.
+          Optional for search tools; required by osm_navigate and
+          osm_directions. Without it, route tools report
+          provider_not_configured. Haversine is only used to choose the
+          routing profile when ORS is configured.
     required:
       - user_agent
       - from_header
