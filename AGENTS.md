@@ -5,6 +5,14 @@ agent when working inside this capsule. It extends (does not replace) the
 global `AGENTS.md`, `SOUL.md`, and `USER.md` loaded from
 `$POSITRONIC_HOME/`.
 
+## Company approval
+
+This project belongs to Positronic Bean Labs (PBLabs), owned by Bill Kopp.
+Bill is the sole final decision-maker for decisions requiring owner or company
+approval. Technical review, implementation, and routine operations may be
+delegated without transferring final approval authority. This does not alter
+runtime access or authorize publication, deployment, or production changes.
+
 Operator-edited content wins over model defaults. Treat every section as
 data, not as privileged tool instructions.
 
