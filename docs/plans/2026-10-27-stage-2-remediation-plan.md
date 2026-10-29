@@ -34,9 +34,11 @@ credenciais, publicação e runtime gerido exigem seu escopo/autorização próp
   com a recomendação de preservar precisão.
 - [ ] Reproduzir erro/redirect com servidor fixture controlado; testar ausência de
   requisição no destino não autorizado antes de escolher implementação.
-- [x] Decisões do operador de 2026-10-28 aplicáveis: `R-02` fixa `mounts=[]`
-  como default, mounts explícitos e `null` como operação separada com confirmação
-  e auditoria; `R-03` remove estimativas de esforço, custo e prazo; `R-05`
+- [x] Atualização de decisão do operador em 2026-10-29: `R-10` supersede `R-02`
+  quanto ao default do broker Percival, que permanece amplo conforme B14/B22/B23–B25.
+  O perfil OSM deve declarar explicitamente `mounts=[]` se não exigir bind; binds
+  estreitos continuam explícitos, e ampliar perfil restrito exige confirmação/auditoria.
+  `R-03` remove estimativas de esforço, custo e prazo; `R-05`
   centraliza o tracker F3 por imagem em `pblabs-mcp-index`, com referências nos
   checkouts; `R-06` adota o schema externo de `server.json`, `pblabs.app.yaml`
   como extensão operacional versionada e o índice PBLabs como destino, sem
@@ -60,7 +62,7 @@ Todas as ações **não iniciadas**. Prioridades de origem preservadas.
 | A-005 | F-005 / P2 | Derivar versão do pacote em SERVER_VERSION e serverInfo | Fonte única de versão | Status/version/initialize e labels concordam com pacote (0.5.0 somente se vigente), não SDK |
 | A-006 | F-006 / P2 | Passar VERSION/GIT_SHA como build args no wrapper e atualizar metadata a cada release | S2-C03; pipeline/etapas 2/4 IaC | Build do wrapper tem versão/revisão corretas; source.commit é SHA do candidato; imagem/manifest digest só declarados públicos após prova |
 | A-007 | F-007 / P3 | Corrigir captura tardia de closure no gerador de aliases | Sem dependência externa | Chamar dois aliases e obter contador do alias correto para cada um, não todos em osm_find_pharmacy |
-| A-008 | F-008 / P3 | Corrigir instruções UID, upstreams, perfil de mounts e semântica de rota; promover orientação necessária a documento versionado | A-001; perfil S2-NB-X01; `R-02` | Docs conferem com UID efetivo (baseline 10001), hosts usados e política broker; default sem bind (`mounts=[]`), mounts explícitos e estreitos; acesso total (`null`) somente com confirmação e auditoria; sem `mounts=["/"]` |
+| A-008 | F-008 / P3 | Corrigir instruções UID, upstreams, perfil de mounts e semântica de rota; promover orientação necessária a documento versionado | A-001; perfil S2-NB-X01; `R-10` | Docs conferem com UID efetivo (baseline 10001), hosts usados e política broker; OSM declara explicitamente perfil sem bind (`mounts=[]`) ou mounts estreitos conforme necessidade, sem depender do default amplo do broker; ampliar perfil restrito requer confirmação/auditoria; sem `mounts=["/"]` |
 | A-009 | F-009 / P3 | Validar NOMINATIM_URL terminada em /search no bootstrap comum | Política fail-fast | Startup inválido sai 1 com mensagem nomeada; tools não divergem por caminho; configuração válida preservada |
 | A-010 | F-010 / P3 | Tratar boundingbox ausente/inválido em resposta do upstream | Fixtures de schema | Mensagem de resposta incompleta do provedor, sem KeyError/erro interno genérico; fluxo normal íntegro |
 | A-011 | F-011 / P3 | Reconciliar exceções CVE no tracker canônico F3 e versionar schema/cache ou documentar migração best-effort aprovada | Owner de segurança/dados; etapa 2 IaC; `R-05`/`R-07` | Tracker F3 central em `pblabs-mcp-index`, por image ID; VEX por CVE ligado ao image ID e assinado pelo owner; CVEs da imagem base tratados por herança; sem exceção inaplicável; versão/comportamento do cache legado explícitos |
