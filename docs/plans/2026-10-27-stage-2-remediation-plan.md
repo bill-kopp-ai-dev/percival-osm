@@ -57,6 +57,11 @@ credenciais, publicação e runtime gerido exigem seu escopo/autorização próp
   mounts (A-008), o tratamento mínimo de CVEs/cache legado (A-011) e a sequência
   de inventário read-only e repin condicional (A-013). Os registros detalhados
   constam na tabela de decisões abaixo; implementação e evidências continuam abertas.
+- [x] `R-11` (2026-10-29): Trivy é o scanner padrão e está instalado; o agente
+  pode executá-lo autonomamente para scans locais quando necessário, cobrindo
+  todas as severidades, atualizando a DB e registrando scanner/DB, SHA e image ID.
+  Preferir TAR do candidato limpo, sem Docker socket. Scan não assina VEX nem
+  autoriza publicação/promoção.
 - [ ] Formalizar essas decisões em S2-C01; materializar e validar S2-C03 conforme
   R-06. Mutação de runtime permanece condicionada a candidato limpo e autorização
   explícita de Bill para a imagem, os runtimes e a janela definidos.
@@ -73,7 +78,7 @@ retornos de gestores são evidência operacional, não aprovações adicionais.
 | S2-C01 | Falhas de upstream nunca serão apresentadas como resultado vazio. O shutdown será observável, terá prazo limitado para drenar chamadas em voo e depois cancelá-las, sem tarefas órfãs. Mounts serão declarados por aplicação. | Formalizar o contrato e validar o comportamento; não bloqueia correções locais independentes. |
 | A-004 | Comparar builds do mesmo SHA, com mesmo builder, bases e argumentos. Aceite exige image ID e digests de camadas idênticos; divergência exige comparação por arquivo e causa registrada. | Executar dois builds limpos do mesmo candidato e guardar a comparação. |
 | A-008 | Criar nota OSM versionada sem restaurar documentos excluídos. Declarar `mounts=[]` sem necessidade de bind; caso contrário, documentar somente mounts estreitos e justificados. | Atualizar a documentação contra o perfil efetivo e preservar as exclusões preexistentes. |
-| A-011 | Fazer scan do candidato limpo e registrar resultado e image ID no tracker F3 canônico. Marcar exceções antigas como obsoletas quando não aplicáveis ao scan; criar VEX assinado por Bill apenas para CVEs encontrados. Documentar o cache legado como migração best-effort, sem mudança de código ou migração agora. | Revalidar o scan no candidato limpo, atualizar o tracker e incluir nota curta sobre compatibilidade best-effort do cache. |
+| A-011 | Fazer scan Trivy do candidato limpo (`R-11`) e registrar resultado e image ID no tracker F3 canônico. Marcar exceções antigas como obsoletas quando não aplicáveis ao scan; criar VEX assinado por Bill apenas para CVEs encontrados. Documentar o cache legado como migração best-effort, sem mudança de código ou migração agora. | Atualizar a DB quando necessário; executar o scan autonomamente no candidato limpo; registrar versão/data da DB, SHA, image ID e resultado no tracker; incluir nota curta sobre compatibilidade best-effort do cache. |
 | A-013 | Fazer inventário read-only de cada runtime gerido e repin somente onde necessário, em uma única operação autorizada para os runtimes afetados. | Preparar candidato de SHA limpo; Bill autoriza explicitamente imagem, runtimes e janela antes de qualquer mutação. Registrar estado antes/depois, cache e rollback. |
 
 ## 3. Backlog integral e critérios de aceite
@@ -93,7 +98,7 @@ seção 6; esta tabela mantém o backlog e os critérios de aceite.
 | A-008 | F-008 / P3 | Criar nota OSM versionada com UID, upstreams, perfil de mounts e semântica de rota; não restaurar documentos excluídos | A-001; perfil OSM e `R-10`; decisão de Bill registrada em 2026-10-29 | Nota confere com UID efetivo (baseline 10001), hosts e perfil; declara `mounts=[]` se não houver bind ou documenta binds estreitos justificados; sem `mounts=["/"]` |
 | A-009 | F-009 / P3 | Validar NOMINATIM_URL terminada em /search no bootstrap comum | Política fail-fast | Startup inválido sai 1 com mensagem nomeada; tools não divergem por caminho; configuração válida preservada |
 | A-010 | F-010 / P3 | Tratar boundingbox ausente/inválido em resposta do upstream | Fixtures de schema | Mensagem de resposta incompleta do provedor, sem KeyError/erro interno genérico; fluxo normal íntegro |
-| A-011 | F-011 / P3 | Fazer scan do candidato limpo; reconciliar exceções antigas no tracker F3 canônico; documentar migração best-effort do cache, sem mudança de código/schema agora | Bill (owner único); `R-05`/`R-07` | Resultado do scan ligado ao image ID em `pblabs-mcp-index`; exceções obsoletas marcadas como não aplicáveis; VEX assinado por Bill para cada CVE encontrado, com CVEs de imagem-base tratados por herança; nota curta documenta comportamento best-effort do cache legado |
+| A-011 | F-011 / P3 | Fazer scan Trivy do candidato limpo (`R-11`); reconciliar exceções antigas no tracker F3 canônico; documentar migração best-effort do cache, sem mudança de código/schema agora | Trivy disponível para execução autônoma; Bill (owner único) assina VEX; `R-05`/`R-07` | Resultado ligado ao image ID em `pblabs-mcp-index`, com versão/data da DB; exceções obsoletas marcadas como não aplicáveis; VEX assinado por Bill para cada CVE encontrado, com CVEs de imagem-base tratados por herança; nota curta documenta comportamento best-effort do cache legado |
 | A-012 | F-012 / P3 | Tratar SIGTERM/SIGINT com encerramento de cliente HTTP e log | S2-C01/S2-NB A-012 para compatibilidade | Shutdown observável, saída/calls em voo com comportamento limitado documentado; EOF/sinal sem tarefa órfã; código esperado explícito |
 | A-013 | F-013 / P3 | Fazer inventário read-only de cada runtime gerido; repin somente onde necessário, numa única operação autorizada para os runtimes afetados | Candidato de SHA limpo; Bill aprova imagem, runtimes e janela; gestores aplicam pela interface própria; `R-08` | Inventário identifica image ID/revision e postura efetiva; onde houver repin, registrar antes/depois, cache preservado e rollback; uma janela datada e autorizada, sem presumir estado por observação histórica |
 
@@ -101,7 +106,7 @@ seção 6; esta tabela mantém o backlog e os critérios de aceite.
 
 | ID | Origem | Entrega / aceite |
 |---|---|---|
-| S2-OS-X01 | DIST-01/DIST-02, seção 8 e X-04/C-09 | Preparar `server.json` conforme schema externo adotado, `pblabs.app.yaml` operacional versionado, scan/SBOM e VEX para CVEs encontrados ligados ao image ID, além de instruções de publicação; S2-C03/etapas 2/4; manifests destinados a `pblabs-mcp-index`; Docker MCP Catalog não é dependência |
+| S2-OS-X01 | DIST-01/DIST-02, seção 8 e X-04/C-09 | Preparar `server.json` conforme schema externo adotado, `pblabs.app.yaml` operacional versionado, scan Trivy/SBOM e VEX para CVEs encontrados ligados ao image ID, além de instruções de publicação; S2-C03/etapas 2/4; manifests destinados a `pblabs-mcp-index`; Docker MCP Catalog não é dependência |
 
 Para cada CVE encontrado no scan do candidato, `R-07` exige um VEX associado ao
 image ID e assinado por Bill; CVEs da imagem base seguem a postura por herança.
