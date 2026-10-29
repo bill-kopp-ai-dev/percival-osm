@@ -1,9 +1,14 @@
 # Stage-2 — Remediação do Percival OSM MCP
 
-**Data / revisão:** 2026-10-27 / 1.0.  
-**ID / estado:** S2-OS / execução parcial local; aceites externos pendentes.
+**Data / revisão:** 2026-10-29 / 1.1 (emissão original: 2026-10-27 / 1.0).
+**ID / estado:** S2-OS / execução parcial local; evidências dos runtimes geridos pendentes.
 **Checkout executor:** `/home/bill/Projects/percival-osm`.  
-**Responsável:** executor OSM a designar por bill; mudanças nos gestores com os respectivos donos.
+**Owner e decisor único do produto e da infraestrutura IaC:** Bill Kopp,
+Positronic Bean Labs (`bill.kopp.dev@gmail.com`).
+**Site da empresa:** `labs.positronicbean.com` (em desenvolvimento).
+**Execução:** Bill responde pelas decisões de produto e infraestrutura. Alterações
+em runtimes geridos continuam a ser aplicadas pelas interfaces dos gestores, com
+aprovação explícita de Bill.
 
 ## 1. Objetivo e fontes
 
@@ -32,12 +37,14 @@ credenciais, publicação e runtime gerido exigem seu escopo/autorização próp
 - [x] Owner decidiu A-001: sem `ORS_API_KEY`, retornar status explícito
   `provider_not_configured`, nunca distância haversine como rota. Decisão alinhada
   com a recomendação de preservar precisão.
-- [ ] Reproduzir erro/redirect com servidor fixture controlado; testar ausência de
-  requisição no destino não autorizado antes de escolher implementação.
+- [x] Bill decidiu em 2026-10-29 que redirects não serão seguidos automaticamente:
+  cada destino será validado antes de qualquer conexão e destinos fora da allowlist
+  serão rejeitados. A fixture de zero requisições ao destino bloqueado continua pendente.
 - [x] Atualização de decisão do operador em 2026-10-29: `R-10` supersede `R-02`
   quanto ao default do broker Percival, que permanece amplo conforme B14/B22/B23–B25.
   O perfil OSM deve declarar explicitamente `mounts=[]` se não exigir bind; binds
-  estreitos continuam explícitos, e ampliar perfil restrito exige confirmação/auditoria.
+  estreitos continuam explícitos, e ampliar perfil restrito exige confirmação e
+  auditoria de Bill.
   `R-03` remove estimativas de esforço, custo e prazo; `R-05`
   centraliza o tracker F3 por imagem em `pblabs-mcp-index`, com referências nos
   checkouts; `R-06` adota o schema externo de `server.json`, `pblabs.app.yaml`
@@ -45,57 +52,82 @@ credenciais, publicação e runtime gerido exigem seu escopo/autorização próp
   dependência do Docker MCP Catalog; `R-07` exige VEX por CVE associado ao image
   ID e assinado pelo owner, com CVEs da imagem base tratados por herança; `R-08`
   fixa pin aprovado e janela única datada para operações que dependem dela.
-- [ ] Alinhar S2-C01 (erro/lifecycle/mounts) e materializar/validar S2-C03
-  conforme o formato já decidido. Ensaio no broker depende de ownership,
-  implementação e prova do perfil; a política não está mais pendente.
+- [x] Bill decidiu em 2026-10-29 os critérios de build reproduzível (A-004), a
+  semântica de erros e lifecycle (S2-C01), a nota OSM versionada e o perfil de
+  mounts (A-008), o tratamento mínimo de CVEs/cache legado (A-011) e a sequência
+  de inventário read-only e repin condicional (A-013). Os registros detalhados
+  constam na tabela de decisões abaixo; implementação e evidências continuam abertas.
+- [ ] Formalizar essas decisões em S2-C01; materializar e validar S2-C03 conforme
+  R-06. Mutação de runtime permanece condicionada a candidato limpo e autorização
+  explícita de Bill para a imagem, os runtimes e a janela definidos.
+
+### 2.1. Decisões do owner — 2026-10-29
+
+Bill Kopp é o único owner e decisor do servidor MCP Percival OSM e da infraestrutura
+IaC da Positronic Bean Labs. As decisões abaixo são vinculantes para este plano;
+retornos de gestores são evidência operacional, não aprovações adicionais.
+
+| ID | Decisão aprovada por Bill | Limite / próximo passo |
+|---|---|---|
+| A-003 | Desativar seguimento automático de redirects; validar cada destino antes de conectar e rejeitar destinos fora da allowlist. | Criar fixture que prove zero requisições ao destino bloqueado e verificar o caminho permitido. |
+| S2-C01 | Falhas de upstream nunca serão apresentadas como resultado vazio. O shutdown será observável, terá prazo limitado para drenar chamadas em voo e depois cancelá-las, sem tarefas órfãs. Mounts serão declarados por aplicação. | Formalizar o contrato e validar o comportamento; não bloqueia correções locais independentes. |
+| A-004 | Comparar builds do mesmo SHA, com mesmo builder, bases e argumentos. Aceite exige image ID e digests de camadas idênticos; divergência exige comparação por arquivo e causa registrada. | Executar dois builds limpos do mesmo candidato e guardar a comparação. |
+| A-008 | Criar nota OSM versionada sem restaurar documentos excluídos. Declarar `mounts=[]` sem necessidade de bind; caso contrário, documentar somente mounts estreitos e justificados. | Atualizar a documentação contra o perfil efetivo e preservar as exclusões preexistentes. |
+| A-011 | Fazer scan do candidato limpo e registrar resultado e image ID no tracker F3 canônico. Marcar exceções antigas como obsoletas quando não aplicáveis ao scan; criar VEX assinado por Bill apenas para CVEs encontrados. Documentar o cache legado como migração best-effort, sem mudança de código ou migração agora. | Revalidar o scan no candidato limpo, atualizar o tracker e incluir nota curta sobre compatibilidade best-effort do cache. |
+| A-013 | Fazer inventário read-only de cada runtime gerido e repin somente onde necessário, em uma única operação autorizada para os runtimes afetados. | Preparar candidato de SHA limpo; Bill autoriza explicitamente imagem, runtimes e janela antes de qualquer mutação. Registrar estado antes/depois, cache e rollback. |
 
 ## 3. Backlog integral e critérios de aceite
 
-Todas as ações **não iniciadas**. Prioridades de origem preservadas.
+Prioridades de origem preservadas. O estado de execução consta no registro da
+seção 6; esta tabela mantém o backlog e os critérios de aceite.
 
-| Ação | Achado / P | Trabalho e áreas previstas | Dependência / dono externo | Aceite verificável |
+| Ação | Achado / P | Trabalho e áreas previstas | Dependência / responsável pela execução | Aceite verificável |
 |---|---|---|---|---|
-| A-001 | F-001 / P1 | Alinhar ORS/fallback e docs em server/entrypoint/server.yaml/README | Decisão explícita do produto sobre ORS_API_KEY | Sem chave: status/mensagem de configuração ou fallback honestamente rotulado; com chave fixture, rota correta; nenhuma falsa afirmação de no_results |
+| A-001 | F-001 / P1 | Alinhar ORS/fallback e docs em server/entrypoint/server.yaml/README | Decisão de Bill registrada; falta validar os fluxos com fixture | Sem chave: status/mensagem de configuração ou fallback honestamente rotulado; com chave fixture, rota correta; nenhuma falsa afirmação de no_results |
 | A-002 | F-002 / P1 | Distinguir falha de upstream de resultado vazio em payload de tools | S2-C01 como referência, sem bloquear fix local | Upstream indisponível/429/5xx/timeout e bloqueio de URL não viram no_results; 200 vazio continua distinguível; logs e payload concordam |
-| A-003 | F-003 / P2 | Validar cada redirect antes de seguir ou recusar redirects explicitamente | Contrato de URL vigente | Destino fora da allowlist recebe zero conexões/requisições; caminho permitido funciona; default follow_redirects false preservado |
-| A-004 | F-004 / P2 | Normalizar timestamps/metadados uv/logs apt/dpkg/ldconfig no build | Mesmas entradas/builder; etapa 2 IaC | Dois builds limpos do mesmo SHA com camadas iguais conforme aceite original; registrar parâmetros e comparação por arquivo se falhar |
+| A-003 | F-003 / P2 | Desativar seguimento automático de redirects; validar cada destino antes de conectar e rejeitar destinos fora da allowlist | Decisão de Bill registrada em 2026-10-29 | Fixture prova zero requisições ao destino bloqueado; caminho permitido funciona; `follow_redirects=false` |
+| A-004 | F-004 / P2 | Normalizar timestamps/metadados uv/logs apt/dpkg/ldconfig no build | Mesmo SHA, builder, imagens-base e argumentos; etapa 2 IaC | Dois builds limpos têm image ID e digests de camadas idênticos; se divergirem, comparar arquivos e registrar causa |
 | A-005 | F-005 / P2 | Derivar versão do pacote em SERVER_VERSION e serverInfo | Fonte única de versão | Status/version/initialize e labels concordam com pacote (0.5.0 somente se vigente), não SDK |
 | A-006 | F-006 / P2 | Passar VERSION/GIT_SHA como build args no wrapper e atualizar metadata a cada release | S2-C03; pipeline/etapas 2/4 IaC | Build do wrapper tem versão/revisão corretas; source.commit é SHA do candidato; imagem/manifest digest só declarados públicos após prova |
 | A-007 | F-007 / P3 | Corrigir captura tardia de closure no gerador de aliases | Sem dependência externa | Chamar dois aliases e obter contador do alias correto para cada um, não todos em osm_find_pharmacy |
-| A-008 | F-008 / P3 | Corrigir instruções UID, upstreams, perfil de mounts e semântica de rota; promover orientação necessária a documento versionado | A-001; perfil S2-NB-X01; `R-10` | Docs conferem com UID efetivo (baseline 10001), hosts usados e política broker; OSM declara explicitamente perfil sem bind (`mounts=[]`) ou mounts estreitos conforme necessidade, sem depender do default amplo do broker; ampliar perfil restrito requer confirmação/auditoria; sem `mounts=["/"]` |
+| A-008 | F-008 / P3 | Criar nota OSM versionada com UID, upstreams, perfil de mounts e semântica de rota; não restaurar documentos excluídos | A-001; perfil OSM e `R-10`; decisão de Bill registrada em 2026-10-29 | Nota confere com UID efetivo (baseline 10001), hosts e perfil; declara `mounts=[]` se não houver bind ou documenta binds estreitos justificados; sem `mounts=["/"]` |
 | A-009 | F-009 / P3 | Validar NOMINATIM_URL terminada em /search no bootstrap comum | Política fail-fast | Startup inválido sai 1 com mensagem nomeada; tools não divergem por caminho; configuração válida preservada |
 | A-010 | F-010 / P3 | Tratar boundingbox ausente/inválido em resposta do upstream | Fixtures de schema | Mensagem de resposta incompleta do provedor, sem KeyError/erro interno genérico; fluxo normal íntegro |
-| A-011 | F-011 / P3 | Reconciliar exceções CVE no tracker canônico F3 e versionar schema/cache ou documentar migração best-effort aprovada | Owner de segurança/dados; etapa 2 IaC; `R-05`/`R-07` | Tracker F3 central em `pblabs-mcp-index`, por image ID; VEX por CVE ligado ao image ID e assinado pelo owner; CVEs da imagem base tratados por herança; sem exceção inaplicável; versão/comportamento do cache legado explícitos |
+| A-011 | F-011 / P3 | Fazer scan do candidato limpo; reconciliar exceções antigas no tracker F3 canônico; documentar migração best-effort do cache, sem mudança de código/schema agora | Bill (owner único); `R-05`/`R-07` | Resultado do scan ligado ao image ID em `pblabs-mcp-index`; exceções obsoletas marcadas como não aplicáveis; VEX assinado por Bill para cada CVE encontrado, com CVEs de imagem-base tratados por herança; nota curta documenta comportamento best-effort do cache legado |
 | A-012 | F-012 / P3 | Tratar SIGTERM/SIGINT com encerramento de cliente HTTP e log | S2-C01/S2-NB A-012 para compatibilidade | Shutdown observável, saída/calls em voo com comportamento limitado documentado; EOF/sinal sem tarefa órfã; código esperado explícito |
-| A-013 | F-013 / P3 | Produzir candidato e solicitar repin/hardening/inventário de cada gestor | S2-AP-X01 + S2-NB A-007; owners; `R-08` | Runtime mostra image ID/revision com pin aprovado, postura efetiva e dados/cache preservados; operação em janela única datada e autorizada; evidência datada, sem presumir pin atual por observação histórica |
+| A-013 | F-013 / P3 | Fazer inventário read-only de cada runtime gerido; repin somente onde necessário, numa única operação autorizada para os runtimes afetados | Candidato de SHA limpo; Bill aprova imagem, runtimes e janela; gestores aplicam pela interface própria; `R-08` | Inventário identifica image ID/revision e postura efetiva; onde houver repin, registrar antes/depois, cache preservado e rollback; uma janela datada e autorizada, sem presumir estado por observação histórica |
 
 ### 3.1. Complemento de distribuição
 
 | ID | Origem | Entrega / aceite |
 |---|---|---|
-| S2-OS-X01 | DIST-01/DIST-02, seção 8 e X-04/C-09 | Preparar `server.json` conforme schema externo adotado, `pblabs.app.yaml` operacional versionado, scan/SBOM/VEX por artefato e instruções de publicação; S2-C03/etapas 2/4; manifests destinados a `pblabs-mcp-index`; Docker MCP Catalog não é dependência |
+| S2-OS-X01 | DIST-01/DIST-02, seção 8 e X-04/C-09 | Preparar `server.json` conforme schema externo adotado, `pblabs.app.yaml` operacional versionado, scan/SBOM e VEX para CVEs encontrados ligados ao image ID, além de instruções de publicação; S2-C03/etapas 2/4; manifests destinados a `pblabs-mcp-index`; Docker MCP Catalog não é dependência |
 
-Para promoção, `R-07` exige um VEX por CVE associado ao image ID e assinado
-pelo owner; CVEs da imagem base seguem a postura por herança. A ausência de
-schema materializado, scan ou digest real continua sendo trabalho de execução,
-não decisão pendente.
+Para cada CVE encontrado no scan do candidato, `R-07` exige um VEX associado ao
+image ID e assinado por Bill; CVEs da imagem base seguem a postura por herança.
+A ausência de schema materializado, scan ou digest real continua sendo trabalho
+de execução, não decisão pendente.
 
 Esse complemento não aumenta as 13 ações originais. F-002 contém hipótese de
 causa: teste diferencial de upstream vazio/falhando deve confirmar o fluxo, sem
-assumir causalidade só pela mensagem. O hardening do spawn é trabalho dos gestores.
+assumir causalidade só pela mensagem. Bill decide o hardening do perfil OSM;
+eventuais mudanças no runtime são aplicadas pelas interfaces dos gestores após
+autorização explícita de Bill.
 
 ## 4. Lotes e dependências
 
 1. **OS-1:** A-001/A-002/A-003, que afetam as conclusões do agente e a fronteira
    de rede; A-009/A-010 podem acompanhar o mesmo caminho de validação.
 2. **OS-2:** A-005/A-007/A-008/A-011/A-012, compatibilidade e cache/lifecycle.
-3. **OS-3:** A-004/A-006 e S2-OS-X01, candidato e distribuição; receber A-013
-   de cada gestor separadamente, com operação autorizada.
+3. **OS-3:** A-004/A-006 e S2-OS-X01, candidato e distribuição; receber inventário
+   read-only dos runtimes e executar A-013 somente onde o repin for necessário,
+   em uma operação autorizada.
 
 Riscos: novas classes de erro/schema quebram consumidor, redirects seguros podem
-recusar upstream antes tolerado, cache versionado exige regra de migração. Registrar
-contrato e regressão pertinente. `R-03` remove a exigência de estimar esforço,
-custo ou prazo.
+recusar upstream antes tolerado, e a migração best-effort do cache legado pode
+descartar entradas incompatíveis. Registrar o comportamento observado sem exigir
+migração de schema nesta ação. `R-03` remove a exigência de estimar esforço, custo
+ou prazo.
 Piloto/replicação e publicação não são execução do plano coordenador documental.
 
 ## 5. Qualificação futura local e externa
@@ -109,12 +141,14 @@ Piloto/replicação e publicação não são execução do plano coordenador doc
 - [ ] Fixture Nominatim/Overpass/ORS para vazio, indisponibilidade, schema incompleto,
   chave ausente e redirect; nenhum tráfego público em failure injection.
 - [ ] Revalidar `V-BUILD`, `V-RUN`, `V-CONFIG`, `V-DATA` do cache, `V-MCP`,
-  `V-FUNC`; `V-PILOT`/`V-REUSE` só com prova própria; retorno dos owners em A-013.
+  `V-FUNC`; `V-PILOT`/`V-REUSE` só com prova própria; evidências read-only dos
+  runtimes em A-013 e autorização explícita de Bill antes de eventual repin.
 - [ ] CI remoto, publicação/pull anônimo e eventual provider real com escopo
   autorizado próprios; respeitar política de uso dos serviços quando aplicável.
 
-Aceites locais não fecham estado de runtime nem catálogo remoto. Falta de retorno
-externo mantém parcial/bloqueado, não “todos os problemas solucionados”.
+Aceites locais não comprovam o estado dos runtimes geridos nem do catálogo remoto.
+Enquanto essas evidências operacionais estiverem pendentes, o plano permanece
+parcial/bloqueado, não “todos os problemas solucionados”.
 
 ## 6. Penúltima etapa — documentar execução neste plano
 
@@ -126,6 +160,7 @@ externo mantém parcial/bloqueado, não “todos os problemas solucionados”.
 | Data / owner | Ações / achados | SHA inicial → final | Mudanças / evidências locais | Resultado / V-* / pendências |
 |---|---|---|---|---|
 | 2026-10-27 / bill (owner), Positronic (execução local) | A-001 parcial, A-003 parcial, A-005 local, A-006 parcial, A-007 local, A-009 local, A-010 parcial; A-002/A-004/A-008/A-011/A-012/A-013 e S2-OS-X01 pendentes | `4a71108f3980c033df1a7f9c331402e688ed213a` → SHA de trabalho não commitado | A-001 decidido e comportamento/docs ajustados; A-003 valida `Location` antes de seguir; A-005 deriva versão do pacote e injeta no serverInfo, verificado pelo protocolo MCP (`serverInfo.version=0.5.0`); A-006 wrapper passa VERSION/GIT_SHA/SOURCE_DATE_EPOCH; A-007 captura nome por valor; A-009 falha no boot com URL `/search` (container `exit 1`, mensagem nomeada); A-010 trata bbox ausente/malformado. `./.venv/bin/python -m pytest -v`: 77 passed; compileall, `bash -n` e diff-check aprovados. Build local `scripts/docker-build.sh stage2-candidate`; smoke: non-root, env guard, MCP 37 tools, HTTP auth/health/shutdown aprovados. Imagem local `sha256:bb4d27903912928e51e0129d8202adef5135ff4e8b899268643091d507a11f63`, version `0.5.0`, revision label `unknown` (worktree sujo), created `2026-10-28T00:24:13Z`. `uv` CLI indisponível; executáveis `.venv` usados. | Parcial. A-002 precisa diferenciar falha, 429/5xx/timeout de vazio em todos os payloads. A-003 ainda precisa fixture provando zero requests no destino bloqueado. A-004 precisa comparação real de builds limpos. A-006 requer candidato de SHA limpo para fechar o vínculo. A-008 a nota de integração não existe no worktree e as exclusões foram preservadas; A-011 tracker local de exceções não existe, remoção depende de reconciliação do owner de segurança; A-012 graceful shutdown pendente. A-013 depende de gestores e operação própria autorizada. S2-C01 continua pendente; formato/schema S2-C03 foi decidido em `R-06`, mas materialização e validação continuam pendentes; `R-03` remove a exigência de estimar esforço, custo ou prazo. Retorno externo pendente. |
+| 2026-10-29 / Bill Kopp (owner e decisor único) | Decisões registradas para A-003, S2-C01, A-004, A-008, A-011 e A-013; execução e provas continuam pendentes | Atualização documental; sem alteração de código ou runtime | Owner: Bill Kopp, Positronic Bean Labs; `bill.kopp.dev@gmail.com`; `labs.positronicbean.com` em desenvolvimento. Redirects sem seguimento automático; semântica de erro/lifecycle definida; critério de build reproduzível fixado; nota OSM versionada sem restaurar exclusões; scan+tracker e cache best-effort para A-011; inventário read-only seguido de repin condicional para A-013. | Decisões não equivalem a aceite de execução. Pendentes: fixtures, builds limpos, scan no candidato limpo, atualização do tracker e nota do cache, revisão dos runtimes por leitura e autorização explícita de Bill para eventual repin numa única janela. |
 
 ## 7. Última etapa — atualizar o plano coordenador
 
