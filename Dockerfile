@@ -80,9 +80,17 @@ RUN UV_PROJECT_ENVIRONMENT=/build/.venv \
 # -----------------------------------------------------------------------------
 FROM debian:forky-slim@sha256:4cee6ff3ebc49e32d55a857e25164ef8e5f8fecff2a186c6393f7e8bd8c23b53 AS runtime
 
-COPY --from=python-runtime /usr/local/bin/python3.12 /usr/local/bin/python3.12
-COPY --from=python-runtime /usr/local/lib/python3.12 /usr/local/lib/python3.12
-COPY --from=python-runtime /usr/local/lib/libpython3.12.so.1.0 /usr/local/lib/libpython3.12.so.1.0
+# Copy the Python runtime through read-only mounts so BuildKit does not stamp
+# destination directories with wall-clock mtimes in separate COPY layers.
+RUN --mount=type=bind,from=python-runtime,source=/usr/local/bin/python3.12,target=/context/python3.12,ro \
+    --mount=type=bind,from=python-runtime,source=/usr/local/lib/python3.12,target=/context/lib-python3.12,ro \
+    --mount=type=bind,from=python-runtime,source=/usr/local/lib/libpython3.12.so.1.0,target=/context/libpython3.12.so.1.0,ro \
+    cp -a /context/python3.12 /usr/local/bin/python3.12 && \
+    cp -a /context/lib-python3.12 /usr/local/lib/python3.12 && \
+    cp -a /context/libpython3.12.so.1.0 /usr/local/lib/libpython3.12.so.1.0 && \
+    find /usr/local/bin/python3.12 /usr/local/lib/python3.12 \
+        /usr/local/lib/libpython3.12.so.1.0 /usr/local/bin /usr/local/lib \
+        -exec touch -h -d "@${SOURCE_DATE_EPOCH}" {} +
 
 ARG DEBIAN_SNAPSHOT=20261020T000000Z
 ARG VERSION=0.0.0
