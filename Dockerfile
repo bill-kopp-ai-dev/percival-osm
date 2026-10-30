@@ -37,6 +37,7 @@
 FROM python:3.12-slim-trixie@sha256:2b4f19dae3a777dfc3b76730bda1e82e1f66ab2a2686fa93ca78edbfb4f04ffe AS python-runtime
 
 FROM ghcr.io/astral-sh/uv:0.9.30-python3.12-trixie-slim@sha256:eacce4ec0ff855c8be0cca407d8c5e8e20139dd3f8f64c018fb654bac0a40bd8 AS builder
+ARG SOURCE_DATE_EPOCH
 
 WORKDIR /build
 
@@ -71,7 +72,8 @@ RUN UV_PROJECT_ENVIRONMENT=/build/.venv \
     uv sync --frozen --no-dev && \
     UV_PROJECT_ENVIRONMENT=/build/.venv \
     uv pip install --no-cache --no-deps /build && \
-    python /build/normalize_venv_metadata.py /build/.venv
+    python /build/normalize_venv_metadata.py /build/.venv && \
+    find /build/.venv -exec touch -h -d "@${SOURCE_DATE_EPOCH}" {} +
 
 # -----------------------------------------------------------------------------
 # Stage 2: runtime
@@ -106,7 +108,9 @@ RUN groupadd --gid 10001 percival && \
     useradd  --uid 10001 --gid percival \
              --create-home --shell /usr/sbin/nologin percival && \
     mkdir -p /app /cache && \
-    chown -R percival:percival /app /cache
+    chown -R percival:percival /app /cache && \
+    touch -h -d "@${SOURCE_DATE_EPOCH}" \
+        /etc/passwd /etc/group /etc/shadow /etc/gshadow /home /home/percival /app /cache
 
 # Copy the resolved venv from the builder. ``--chown`` keeps the runtime
 # non-root user able to read it.
@@ -146,16 +150,13 @@ RUN printf 'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian
     rm -f /usr/bin/nsenter /usr/bin/infocmp && \
     rm -rf /var/lib/apt/lists/* /var/cache/ldconfig/aux-cache && \
     rm -f /var/log/apt/history.log /var/log/apt/term.log /var/log/dpkg.log && \
-    chmod +x /usr/local/bin/docker-entrypoint.sh
+    chmod +x /usr/local/bin/docker-entrypoint.sh && \
+    find /etc /usr /var -xdev \
+        ! -path '/etc/hosts' ! -path '/etc/hostname' ! -path '/etc/resolv.conf' \
+        ! -path '/etc/mtab' \
+        -exec touch -h -d "@${SOURCE_DATE_EPOCH}" {} +
 
 WORKDIR /app
-# Build tools and package installation write wall-clock mtimes even when all
-# package inputs are pinned. Normalize the final filesystem to the candidate
-# source timestamp so layer digests do not depend on build time.
-RUN find / -xdev \
-    ! -path '/proc*' ! -path '/sys*' ! -path '/dev*' ! -path '/run*' \
-    ! -path '/etc/hosts' ! -path '/etc/hostname' ! -path '/etc/resolv.conf' \
-    -exec touch -h -d "@${SOURCE_DATE_EPOCH}" {} +
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
