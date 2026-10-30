@@ -154,6 +154,7 @@ WORKDIR /app
 # source timestamp so layer digests do not depend on build time.
 RUN find / -xdev \
     ! -path '/proc*' ! -path '/sys*' ! -path '/dev*' ! -path '/run*' \
+    ! -path '/etc/hosts' ! -path '/etc/hostname' ! -path '/etc/resolv.conf' \
     -exec touch -h -d "@${SOURCE_DATE_EPOCH}" {} +
 
 ENV PYTHONUNBUFFERED=1 \
