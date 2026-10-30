@@ -118,7 +118,8 @@ RUN groupadd --gid 10001 percival && \
     mkdir -p /app /cache && \
     chown -R percival:percival /app /cache && \
     touch -h -d "@${SOURCE_DATE_EPOCH}" \
-        /etc/passwd /etc/group /etc/shadow /etc/gshadow /home /home/percival /app /cache
+        /etc /etc/passwd /etc/group /etc/shadow /etc/gshadow \
+        /etc/subuid /etc/subgid /home /home/percival /app /cache
 
 # Copy app inputs in one normalized layer. COPY layers stamp destination
 # directories with wall-clock mtimes, so use read-only BuildKit mounts and
