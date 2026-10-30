@@ -112,13 +112,23 @@ RUN groupadd --gid 10001 percival && \
     touch -h -d "@${SOURCE_DATE_EPOCH}" \
         /etc/passwd /etc/group /etc/shadow /etc/gshadow /home /home/percival /app /cache
 
-# Copy the resolved venv from the builder. ``--chown`` keeps the runtime
-# non-root user able to read it.
-COPY --from=builder --chown=percival:percival /build/.venv /app/.venv
-COPY --chown=percival:percival src /app/src
-COPY --chown=percival:percival docs /app/docs
-COPY --chown=percival:percival LICENSE /app/LICENSE
-COPY --chown=percival:percival docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+# Copy app inputs in one normalized layer. COPY layers stamp destination
+# directories with wall-clock mtimes, so use read-only BuildKit mounts and
+# normalize the resulting files before this layer is committed.
+RUN --mount=type=bind,from=builder,source=/build/.venv,target=/context/venv,ro \
+    --mount=type=bind,source=src,target=/context/src,ro \
+    --mount=type=bind,source=docs,target=/context/docs,ro \
+    --mount=type=bind,source=LICENSE,target=/context/LICENSE,ro \
+    --mount=type=bind,source=docker-entrypoint.sh,target=/context/docker-entrypoint.sh,ro \
+    cp -a /context/venv /app/.venv && \
+    cp -a /context/src /app/src && \
+    cp -a /context/docs /app/docs && \
+    cp -a /context/LICENSE /app/LICENSE && \
+    cp -a /context/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh && \
+    chown -R percival:percival /app /usr/local/bin/docker-entrypoint.sh && \
+    chmod +x /usr/local/bin/docker-entrypoint.sh && \
+    find /app /usr/local/bin/docker-entrypoint.sh /usr/local/bin \
+        -exec touch -h -d "@${SOURCE_DATE_EPOCH}" {} +
 
 # Strip the build-only system packages we needed in the builder stage. Runtime
 # keeps ca-certificates for TLS and bash for the entrypoint.
