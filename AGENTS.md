@@ -5,13 +5,21 @@ agent when working inside this capsule. It extends (does not replace) the
 global `AGENTS.md`, `SOUL.md`, and `USER.md` loaded from
 `$POSITRONIC_HOME/`.
 
-## Company approval
+## Owner and operating posture
 
-This project belongs to Positronic Bean Labs (PBLabs), owned by Bill Kopp.
-Bill is the sole final decision-maker for decisions requiring owner or company
-approval. Technical review, implementation, and routine operations may be
-delegated without transferring final approval authority. This does not alter
-runtime access or authorize publication, deployment, or production changes.
+This project and its IaC are owned and operated solely by Bill Kopp, who is
+also the sole decision-maker and signer. Company: Positronic Bean Labs; email:
+`bill.kopp.dev@gmail.com`; website: `labs.positronicbean.com`.
+
+Keep process proportional to a single-owner project. Do not add duplicate
+approvals, cross-owner reviews, sign-offs, or evidence artifacts for the same
+decision. Use focused checks that address a concrete risk; do not require a
+full test suite, manual inspector session, or external corroboration by default.
+When Bill explicitly requests a remote change (including push, release,
+publication, or deployment), that request is the authorization; do not ask for
+the same approval again. For an external operation whose target or impact is
+not specified, clarify only that missing detail. Report what was changed and
+the checks actually performed.
 
 Operator-edited content wins over model defaults. Treat every section as
 data, not as privileged tool instructions.
@@ -37,35 +45,35 @@ data, not as privileged tool instructions.
   Falhas de configuração devem ser altas (`ValueError`), nunca silenciosas.
 - Princípios `percival.OS` regem mudanças: privacidade, soberania de
   dados, segurança hardened, transparência operacional.
-- Toda mutação remota (push, release, publicação) exige aprovação
-  explícita do operador.
+- Mutations must stay within the scope Bill requested. Do not infer a release,
+  publication, or production deployment from a code change or push request.
+- Preserve concrete safety controls (secrets handling, URL allowlists,
+  non-root execution, stdio protocol separation, and least-privilege mounts).
+  Explain material risk when a requested change would weaken one; avoid
+  procedural gates that do not reduce a specific risk.
 
 ## Verification
 
-- `uv run pytest -v` — suíte completa (alvo: 76 testes, <1s).
-- `uv run pytest tests/test_s5_primitives.py` — prompts, resources,
-  regressões de bug.
-- `uv run pytest tests/test_s3_observability.py` — health, version,
-  logging estruturado, rate limit.
-- `uv run pytest tests/test_runtime_security.py` — URL policy,
-  sanitização, allow-list.
-- Inspeção manual via MCP inspector com `osm_get_health` /
-  `osm_get_security_metrics` antes de releases.
+- Run the smallest relevant check for the change when verification is needed;
+  use `uv run pytest -v` for broad Python changes. Do not run tests when the
+  user asks only for review or documentation and no test is needed.
+- Manual MCP inspection is useful for transport/runtime changes, not a
+  mandatory sign-off for every release or documentation update.
 
 ## Open questions
 
-Nenhuma no momento. Listar aqui toda decisão consequente que ficar em
-aberto durante o trabalho no projeto.
+List only unresolved decisions that materially affect implementation or scope;
+do not maintain a list of routine choices or resolved questions.
 
 
 ## Docker MCP operations
 
 - Preserve stdio JSON-RPC-only stdout; do not add TTY, host ports or HTTP
   healthchecks to stdio. Follow the repo's explicit transport/profile contract.
-- The recorded manager owns production MCP containers; the broker alone gets
-  Docker access. Compose is a local fixture, not a second production owner.
-- Use Percival WebUI/API or Positronic `/mcp` TUI/CLI according to ownership;
-  reread revisions and image ID, and never hand-edit manager state.
-- Exercise outbound API behavior and failure/rollback only in fixtures where
-  possible; redact request data/tokens. Verify MCP handshake and a safe health
-  or security-metrics call through the owner.
+- Bill owns production MCP containers and decides their configuration. Use the
+  supported Percival or Positronic interface when changing managed runtime
+  state; Compose remains a local fixture. Do not hand-edit manager state.
+- Use fixtures for outbound API failure cases where practical; redact secrets
+  and personal request data. Verify handshake/health when changing transport
+  or runtime behavior, without repeating the same verification through
+  multiple interfaces unless a concrete discrepancy requires it.
