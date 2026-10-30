@@ -64,12 +64,14 @@ RUN mkdir -p src/percival_osm_mcp && \
 # required by hatchling's metadata step (``[project].readme = "README.md"``).
 COPY README.md /build/README.md
 COPY LICENSE /build/LICENSE
+COPY scripts/normalize_venv_metadata.py /build/normalize_venv_metadata.py
 COPY src /build/src
 COPY docs /build/docs
 RUN UV_PROJECT_ENVIRONMENT=/build/.venv \
     uv sync --frozen --no-dev && \
     UV_PROJECT_ENVIRONMENT=/build/.venv \
-    uv pip install --no-cache --no-deps /build
+    uv pip install --no-cache --no-deps /build && \
+    python /build/normalize_venv_metadata.py /build/.venv
 
 # -----------------------------------------------------------------------------
 # Stage 2: runtime
@@ -142,7 +144,8 @@ RUN printf 'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian
         /usr/local/lib/python3.12/ensurepip/_bundled \
     && chmod u-s /usr/bin/mount && \
     rm -f /usr/bin/nsenter /usr/bin/infocmp && \
-    rm -rf /var/lib/apt/lists/* && \
+    rm -rf /var/lib/apt/lists/* /var/cache/ldconfig/aux-cache && \
+    rm -f /var/log/apt/history.log /var/log/apt/term.log /var/log/dpkg.log && \
     chmod +x /usr/local/bin/docker-entrypoint.sh
 
 WORKDIR /app

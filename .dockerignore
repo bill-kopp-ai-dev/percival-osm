@@ -5,6 +5,8 @@
 !README.md
 !LICENSE
 !docker-entrypoint.sh
+!scripts/
+!scripts/normalize_venv_metadata.py
 !src/
 !src/**
 !docs/
