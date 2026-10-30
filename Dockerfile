@@ -149,6 +149,13 @@ RUN printf 'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian
     chmod +x /usr/local/bin/docker-entrypoint.sh
 
 WORKDIR /app
+# Build tools and package installation write wall-clock mtimes even when all
+# package inputs are pinned. Normalize the final filesystem to the candidate
+# source timestamp so layer digests do not depend on build time.
+RUN find / -xdev \
+    ! -path '/proc*' ! -path '/sys*' ! -path '/dev*' ! -path '/run*' \
+    -exec touch -h -d "@${SOURCE_DATE_EPOCH}" {} +
+
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONFAULTHANDLER=1 \
