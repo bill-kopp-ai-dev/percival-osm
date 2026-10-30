@@ -79,6 +79,7 @@ RUN UV_PROJECT_ENVIRONMENT=/build/.venv \
 # Stage 2: runtime
 # -----------------------------------------------------------------------------
 FROM debian:forky-slim@sha256:4cee6ff3ebc49e32d55a857e25164ef8e5f8fecff2a186c6393f7e8bd8c23b53 AS runtime
+ARG SOURCE_DATE_EPOCH
 
 # Copy the Python runtime through read-only mounts so BuildKit does not stamp
 # destination directories with wall-clock mtimes in separate COPY layers.
@@ -95,7 +96,6 @@ RUN --mount=type=bind,from=python-runtime,source=/usr/local/bin/python3.12,targe
 ARG DEBIAN_SNAPSHOT=20261020T000000Z
 ARG VERSION=0.0.0
 ARG GIT_SHA=unknown
-ARG SOURCE_DATE_EPOCH
 ENV SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}
 
 # https://github.com/opencontainers/image-spec/blob/main/annotations.md
