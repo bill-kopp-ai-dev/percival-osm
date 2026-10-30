@@ -28,6 +28,7 @@ x-base-config: &base-config
   user: "10001:10001"
   # The launcher owns the init layer; the image embeds none. One init only.
   init: true
+  stop_grace_period: 30s
   read_only: true
   tmpfs:
     - /tmp:size=64m,mode=1777,noexec,nosuid,nodev
@@ -87,7 +88,7 @@ services:
     <<: *base-config
     command: ["stdio"]
     # Optional routing credential is read from a file. /dev/null is an empty,
-    # present default, so routing falls back to haversine without extra setup.
+    # present default; route tools report provider_not_configured without ORS.
     entrypoint:
       - /bin/sh
       - -ec
@@ -182,7 +183,7 @@ volumes:
 
 secrets:
   # Optional OpenRouteService credential: default `/dev/null` means empty and
-  # the server uses its documented haversine fallback. To enable routing,
+  # route tools report provider_not_configured. To enable routing,
   # create a host file readable by UID 10001 (mode 0644 inside a host
   # directory mode 0700) and set ORS_API_KEY_FILE to its absolute path.
   ors_api_key:

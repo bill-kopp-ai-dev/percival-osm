@@ -89,6 +89,7 @@ def test_compose_declares_the_single_init() -> None:
         "the compose service must declare init: true so the launcher owns "
         "the init layer and the container stops cleanly on SIGTERM"
     )
+    assert service["stop_grace_period"] == "30s"
 
 
 def test_dockerfile_drops_capabilities_in_compose() -> None:

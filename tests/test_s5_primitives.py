@@ -294,3 +294,28 @@ async def test_single_flight_distance_dedupes_concurrent_calls(monkeypatch):
     assert upstream_calls["n"] == 1, (
         "single-flight should collapse concurrent calls into one upstream"
     )
+
+
+async def test_legacy_aliases_increment_only_the_called_alias(monkeypatch):
+    from percival_osm_mcp import server as server_mod
+
+    server_mod.reset_operational_metrics_for_tests()
+    categories = []
+
+    async def fake_search_category_near_place(*, place, category, **kwargs):
+        categories.append(category)
+        return '{"status":"no_results"}'
+
+    monkeypatch.setattr(
+        server_mod, "search_category_near_place", fake_search_category_near_place
+    )
+    first = server_mod.mcp._tool_manager._tools["osm_find_pharmacy"]
+    second = server_mod.mcp._tool_manager._tools["osm_find_bakeries"]
+    await first.fn(place="Fixtureville")
+    await second.fn(place="Fixtureville")
+
+    calls = server_mod.get_operational_snapshot()["tool_calls"]
+    assert categories == ["pharmacies", "bakeries"]
+    assert calls["osm_find_pharmacy"] == 1
+    assert calls["osm_find_bakeries"] == 1
+    assert calls.get("osm_find_nearby", 0) == 0

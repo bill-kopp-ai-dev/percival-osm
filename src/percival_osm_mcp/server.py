@@ -203,6 +203,19 @@ class Settings(BaseSettings):
     )
 
 
+class UpstreamRequestError(RuntimeError):
+    """An upstream request failed or returned a response we cannot use."""
+
+
+def _upstream_error_summary(exc: Exception) -> str:
+    """Summarize provider failures without retaining request URLs or payloads."""
+    if isinstance(exc, httpx.HTTPStatusError):
+        return f"HTTP {exc.response.status_code}"
+    if isinstance(exc, httpx.TimeoutException):
+        return "timeout"
+    return type(exc).__name__
+
+
 def _stable_cache_key(prefix: str, payload: Any) -> str:
     serialized = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
     digest = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
@@ -285,6 +298,7 @@ SERVER_NAME = "percival-osm"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8080
 DEFAULT_AUTH_TOKEN_ENV_VAR = "MCP_OSM_AUTH_TOKEN"
+SHUTDOWN_DRAIN_TIMEOUT_SECONDS = 25
 
 # Initialize FastMCP server
 mcp = FastMCP(
@@ -867,7 +881,13 @@ async def _run_http_transport(
         mode=mode,
         auth_token=auth_token,
     )
-    config = uvicorn.Config(http_app, host=host, port=port, log_level="info")
+    config = uvicorn.Config(
+        http_app,
+        host=host,
+        port=port,
+        log_level="info",
+        timeout_graceful_shutdown=SHUTDOWN_DRAIN_TIMEOUT_SECONDS,
+    )
     uvicorn_server = uvicorn.Server(config)
     await uvicorn_server.serve()
 
@@ -1701,6 +1721,7 @@ class OsmSearcher:
         # the same key to share a single upstream call instead of stampeding.
         self._distance_futures: dict[str, asyncio.Future] = {}
         self._distance_futures_lock = asyncio.Lock()
+        self._distance_tasks: set[asyncio.Task] = set()
         self._nominatim_limiter = AsyncTokenBucket(
             rate_per_second=self.valves.nominatim_rate_limit_rps,
             burst=self.valves.nominatim_rate_limit_burst,
@@ -1754,6 +1775,15 @@ class OsmSearcher:
         return self._http_client
 
     async def aclose(self) -> None:
+        tasks = tuple(self._distance_tasks)
+        if tasks:
+            _, pending = await asyncio.wait(
+                tasks, timeout=SHUTDOWN_DRAIN_TIMEOUT_SECONDS
+            )
+            for task in pending:
+                task.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
         if self._http_client is not None:
             await self._http_client.aclose()
             self._http_client = None
@@ -1854,7 +1884,7 @@ class OsmSearcher:
                     url=url,
                     error_type=type(exc).__name__,
                 )
-                record_upstream_failure(type(exc).__name__, str(exc))
+                record_upstream_failure(type(exc).__name__, _upstream_error_summary(exc))
                 is_retryable = isinstance(exc, httpx.RequestError) or (
                     isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code >= 500
                 )
@@ -2049,15 +2079,23 @@ class OsmSearcher:
                         result = await self.calculate_navigation_distance(
                             origin, thing
                         )
-                        future.set_result(result)
+                        if not future.done():
+                            future.set_result(result)
+                    except asyncio.CancelledError:
+                        if not future.done():
+                            future.cancel()
+                        raise
                     except Exception as exc:
-                        future.set_exception(exc)
+                        if not future.done():
+                            future.set_exception(exc)
                     finally:
                         # Always drop the future so retries can run later.
                         async with self._distance_futures_lock:
                             self._distance_futures.pop(cache_key, None)
 
-                loop.create_task(_run())
+                task = loop.create_task(_run())
+                self._distance_tasks.add(task)
+                task.add_done_callback(self._distance_tasks.discard)
 
         return await future
 
@@ -2078,8 +2116,8 @@ class OsmSearcher:
                         cache_key, origin, thing
                     )
                 except Exception as e:
-                    logger.warning("Error querying ORS: %s", e)
-                    record_upstream_failure("ORS", str(e))
+                    logger.warning("Error querying ORS: %s", _upstream_error_summary(e))
+                    record_upstream_failure("ORS", _upstream_error_summary(e))
                     logger.debug("Falling back to regular distance due to ORS error")
                     nav_distance = thing["distance"]
 
@@ -2192,8 +2230,9 @@ class OsmSearcher:
             data = await self._http_get_json(url, params=params, headers=headers)
         except Exception as exc:
             await self.event_error(exc)
-            logger.warning("Nominatim lookup request failed: %s", exc)
-            return []
+            logger.warning("Nominatim lookup request failed: %s", _upstream_error_summary(exc))
+            record_upstream_failure("NominatimLookup", _upstream_error_summary(exc))
+            raise UpstreamRequestError("Nominatim lookup request failed.") from exc
 
         if not data:
             logger.debug("No results found for Nominatim lookup")
@@ -2220,7 +2259,7 @@ class OsmSearcher:
 
     async def nominatim_search(
         self, query, format="json", limit: int = 1
-    ) -> Optional[dict]:
+    ) -> Optional[List[dict]]:
         await self.event_resolving(done=False)
         cache_key = _stable_cache_key(
             "nominatim_search",
@@ -2252,14 +2291,14 @@ class OsmSearcher:
             data = await self._http_get_json(url, params=params, headers=headers)
         except Exception as exc:
             await self.event_error(exc)
-            logger.warning("Nominatim search request failed: %s", exc)
-            record_upstream_failure("NominatimSearch", str(exc))
-            return None
+            logger.warning("Nominatim search request failed: %s", _upstream_error_summary(exc))
+            record_upstream_failure("NominatimSearch", type(exc).__name__)
+            raise UpstreamRequestError("Nominatim search request failed.") from exc
 
         await self.event_resolving(done=True)
 
-        if not data:
-            raise ValueError(f"No results found for query '{query}'")
+        if not isinstance(data, list):
+            raise UpstreamRequestError("Nominatim search returned an invalid response.")
 
         logger.debug("Got result from Nominatim for: %s", query)
         # Cache the full result for this (query, format, limit) tuple.
@@ -2319,13 +2358,16 @@ class OsmSearcher:
             data = await self._http_get_json(url, params=params, headers=headers)
         except Exception as exc:
             await self.event_error(exc)
-            logger.warning("Nominatim reverse request failed: %s", exc)
+            logger.warning("Nominatim reverse request failed: %s", _upstream_error_summary(exc))
+            record_upstream_failure("NominatimReverse", type(exc).__name__)
             await self.event_resolving(done=True)
-            return None
+            raise UpstreamRequestError("Nominatim reverse request failed.") from exc
 
         await self.event_resolving(done=True)
         if not data:
             return None
+        if not isinstance(data, dict):
+            raise UpstreamRequestError("Nominatim reverse returned an invalid response.")
 
         self._cache.set(cache_key, data)
         return data
@@ -2390,12 +2432,14 @@ class OsmSearcher:
         try:
             payload = await self._http_get_json(url, params=data, headers=headers)
         except Exception as exc:
-            record_upstream_failure("Overpass", str(exc))
-            raise Exception(f"Error calling Overpass API: {exc}") from exc
+            record_upstream_failure("Overpass", type(exc).__name__)
+            raise UpstreamRequestError("Overpass request failed.") from exc
 
         # nodes have exact GPS coordinates. we also include useful way entries,
         # post-processed to remove extra data and add centered GPS coordinates.
-        results = payload["elements"] if "elements" in payload else []
+        if not isinstance(payload, dict) or not isinstance(payload.get("elements"), list):
+            raise UpstreamRequestError("Overpass returned an invalid response.")
+        results = payload["elements"]
         nodes = []
         ways = []
         things_missing_names = []
@@ -2431,14 +2475,10 @@ class OsmSearcher:
     ):
         nodes, ways = await self.overpass_search(place, tags, bbox, limit, radius)
 
-        # use results from overpass, but if they do not exist,
-        # fall back to the nominatim result. this may or may
-        # not be a good idea.
-        things_nearby = (
-            nodes + ways
-            if len(nodes) > 0 or len(ways) > 0
-            else OsmSearcher.fallback(nominatim_result)
-        )
+        # A successful but empty Overpass response means that no nearby
+        # features matched. The resolved Nominatim place is not itself a POI
+        # result and must not make an empty search look successful.
+        things_nearby = nodes + ways
 
         # in order to not spam ORS, we first sort by haversine
         # distance and drop number of results to the limit. then, if
@@ -2490,8 +2530,27 @@ class OsmSearcher:
 
         try:
             nominatim_result = await self.nominatim_search(place, limit=1)
-        except ValueError:
-            nominatim_result = []
+        except ValueError as exc:
+            await self.event_error(exc)
+            return {
+                "place_display_name": place,
+                "results": build_tool_response(
+                    status="config_error",
+                    message="OSM request configuration is invalid.",
+                    query=query_payload,
+                ),
+                "things": [],
+            }
+        except UpstreamRequestError:
+            return {
+                "place_display_name": place,
+                "results": build_tool_response(
+                    status="upstream_error",
+                    message="Nominatim could not complete the place lookup.",
+                    query=query_payload,
+                ),
+                "things": [],
+            }
 
         if not nominatim_result or len(nominatim_result) == 0:
             await self.event_search_complete(category, place, 0)
@@ -2534,11 +2593,15 @@ class OsmSearcher:
                 if not all(math.isfinite(value) for value in bbox_values):
                     raise ValueError
             except (TypeError, ValueError):
-                return build_tool_response(
-                    status="upstream_error",
-                    message="The place provider returned an incomplete bounding box.",
-                    query=query_payload,
-                )
+                return {
+                    "place_display_name": place_display_name,
+                    "results": build_tool_response(
+                        status="upstream_error",
+                        message="The place provider returned an incomplete bounding box.",
+                        query=query_payload,
+                    ),
+                    "things": [],
+                }
             bbox = dict(zip(("minlat", "maxlat", "minlon", "maxlon"), bbox_values))
 
             logger.debug("Searching for %s near %s", category, place_display_name)
@@ -2608,20 +2671,26 @@ class OsmSearcher:
                 "results": resp,
                 "things": things_nearby,
             }
-        except ValueError:
+        except ValueError as exc:
+            await self.event_search_complete(category, place_display_name, 0)
+            await self.event_error(exc)
+            return {
+                "place_display_name": place_display_name,
+                "results": build_tool_response(
+                    status="upstream_error",
+                    message="An OSM provider returned a response that could not be used.",
+                    query=query_payload,
+                ),
+                "things": [],
+            }
+        except UpstreamRequestError:
             await self.event_search_complete(category, place_display_name, 0)
             return {
                 "place_display_name": place_display_name,
                 "results": build_tool_response(
-                    status="no_results",
-                    message=NO_RESULTS,
+                    status="upstream_error",
+                    message="An OSM provider request failed; retry later.",
                     query=query_payload,
-                    data={
-                        "place_display_name": sanitize_external_text(
-                            place_display_name,
-                            max_length=220,
-                        )
-                    },
                 ),
                 "things": [],
             }
@@ -2681,15 +2750,18 @@ async def do_osm_search(
         "Searching for [%s] (%s, etc) near place: %s", category, tags[0], place
     )
     searcher = OsmSearcher(valves, user_valves, event_emitter)
-    search = await searcher.search_nearby(
-        place,
-        tags,
-        limit=limit,
-        radius=radius,
-        category=category,
-        response_mode=response_mode,
-    )
-    return search["results"]
+    try:
+        search = await searcher.search_nearby(
+            place,
+            tags,
+            limit=limit,
+            radius=radius,
+            category=category,
+            response_mode=response_mode,
+        )
+        return search["results"]
+    finally:
+        await searcher.aclose()
 
 
 async def do_osm_search_full(
@@ -2739,14 +2811,17 @@ async def do_osm_search_full(
         "Searching for [%s] (%s, etc) near place: %s", category, tags[0], place
     )
     searcher = OsmSearcher(valves, user_valves, event_emitter)
-    return await searcher.search_nearby(
-        place,
-        tags,
-        limit=limit,
-        radius=radius,
-        category=category,
-        response_mode=response_mode,
-    )
+    try:
+        return await searcher.search_nearby(
+            place,
+            tags,
+            limit=limit,
+            radius=radius,
+            category=category,
+            response_mode=response_mode,
+        )
+    finally:
+        await searcher.aclose()
 
 
 def unsupported_category_message(category: str) -> str:
@@ -2822,6 +2897,12 @@ async def find_specific_place_impl(address_or_place: str, response_mode: str) ->
                 message=NO_RESULTS,
                 query=query_payload,
             )
+    except UpstreamRequestError:
+        return build_tool_response(
+            status="upstream_error",
+            message="Nominatim could not complete the place lookup; retry later.",
+            query=query_payload,
+        )
     except Exception:
         logger.exception("Unexpected specific place lookup error")
         return build_tool_response(
@@ -2829,6 +2910,8 @@ async def find_specific_place_impl(address_or_place: str, response_mode: str) ->
             message="Specific place lookup failed due to an internal error.",
             query=query_payload,
         )
+    finally:
+        await searcher.aclose()
 
 
 class OsmNavigator:
@@ -2987,10 +3070,16 @@ class OsmNavigator:
             logger.exception("Unexpected navigation error")
             await self.event_error(e)
             return build_tool_response(
-                status="error",
-                message="Navigation failed due to an internal error.",
+                status="upstream_error" if isinstance(e, UpstreamRequestError) else "error",
+                message=(
+                    "An upstream provider could not complete the navigation request; retry later."
+                    if isinstance(e, UpstreamRequestError)
+                    else "Navigation failed due to an internal error."
+                ),
                 query=query_payload,
             )
+        finally:
+            await searcher.aclose()
 
     async def directions(self, start_place: str, destination_place: str):
         """Turn-by-turn variant of ``navigate``.
@@ -3104,10 +3193,16 @@ class OsmNavigator:
             logger.exception("Unexpected directions error")
             await self.event_error(e)
             return build_tool_response(
-                status="error",
-                message="Turn-by-turn directions failed due to an internal error.",
+                status="upstream_error" if isinstance(e, UpstreamRequestError) else "error",
+                message=(
+                    "An upstream provider could not complete the directions request; retry later."
+                    if isinstance(e, UpstreamRequestError)
+                    else "Turn-by-turn directions failed due to an internal error."
+                ),
                 query=query_payload,
             )
+        finally:
+            await searcher.aclose()
 
 
 def _track(tool_name: str):
@@ -3187,6 +3282,12 @@ async def find_address_for_coordinates(
     }
     try:
         result = await searcher.nominatim_reverse(latitude, longitude)
+    except UpstreamRequestError:
+        return build_tool_response(
+            status="upstream_error",
+            message="Nominatim could not complete the reverse lookup; retry later.",
+            query=query_payload,
+        )
     except ValueError as exc:
         logger.warning("Reverse geocoding config error: %s", exc)
         return build_tool_response(
@@ -3195,6 +3296,8 @@ async def find_address_for_coordinates(
             query=query_payload,
             include_untrusted_warning=False,
         )
+    finally:
+        await searcher.aclose()
 
     if not result:
         return build_tool_response(
@@ -3360,6 +3463,12 @@ async def geocode_place(
     }
     try:
         result = await searcher.nominatim_search(place, limit=limit)
+    except UpstreamRequestError:
+        return build_tool_response(
+            status="upstream_error",
+            message="Nominatim could not complete the geocoding request; retry later.",
+            query=query_payload,
+        )
     except ValueError as exc:
         logger.warning("Geocode config error: %s", exc)
         return build_tool_response(
@@ -3368,6 +3477,8 @@ async def geocode_place(
             query=query_payload,
             include_untrusted_warning=False,
         )
+    finally:
+        await searcher.aclose()
 
     if not result:
         return build_tool_response(
@@ -3804,30 +3915,33 @@ async def run_server(
         auth_token_env=auth_token_env,
     )
 
-    if mode == "stdio":
-        logger.info("Starting stdio server...")
-        await mcp.run_stdio_async()
-    elif mode == "sse":
-        logger.info("Starting SSE server on %s:%s...", host, port)
-        await _run_http_transport(
-            mcp,
-            mode="sse",
-            host=host,
-            port=port,
-            auth_token=auth_token,
-        )
-    elif mode == "streamable-http":
-        logger.info("Starting Streamable HTTP server on %s:%s...", host, port)
-        logger.info("Endpoint: http://%s:%s/mcp", host, port)
-        await _run_http_transport(
-            mcp,
-            mode="streamable-http",
-            host=host,
-            port=port,
-            auth_token=auth_token,
-        )
-    else:
-        raise ValueError(f"Unknown mode: {mode}")
+    try:
+        if mode == "stdio":
+            logger.info("Starting stdio server...")
+            await mcp.run_stdio_async()
+        elif mode == "sse":
+            logger.info("Starting SSE server on %s:%s...", host, port)
+            await _run_http_transport(
+                mcp,
+                mode="sse",
+                host=host,
+                port=port,
+                auth_token=auth_token,
+            )
+        elif mode == "streamable-http":
+            logger.info("Starting Streamable HTTP server on %s:%s...", host, port)
+            logger.info("Endpoint: http://%s:%s/mcp", host, port)
+            await _run_http_transport(
+                mcp,
+                mode="streamable-http",
+                host=host,
+                port=port,
+                auth_token=auth_token,
+            )
+        else:
+            raise ValueError(f"Unknown mode: {mode}")
+    finally:
+        logger.info("Server transport stopped; in-flight work has drained or been cancelled.")
 
 
 async def async_main() -> None:

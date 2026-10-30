@@ -3,6 +3,7 @@ import stat
 from pathlib import Path
 
 import pytest
+import httpx
 
 import percival_osm_mcp.server as server_mod
 from percival_osm_mcp.server import (
@@ -63,6 +64,14 @@ def test_validate_upstream_policy_rejects_private_target() -> None:
         )
     metrics = get_security_metrics_snapshot()
     assert metrics.get("upstream_url_blocked", 0) >= 1
+
+
+def test_runtime_configuration_rejects_nominatim_search_endpoint() -> None:
+    from percival_osm_mcp.server import validate_upstream_runtime_configuration
+
+    settings = _base_settings(nominatim_url="https://nominatim.openstreetmap.org/search")
+    with pytest.raises(ValueError, match="nominatim_url"):
+        validate_upstream_runtime_configuration(settings)
 
 
 def test_resolve_secure_cache_path_rejects_outside_allowed_dirs(tmp_path: Path) -> None:
@@ -193,3 +202,130 @@ async def test_http_get_json_validates_redirect_chain(monkeypatch) -> None:
             headers={"User-Agent": "ua", "From": "from@example.com"},
         )
     assert len(observed_urls) == 1
+
+
+@pytest.mark.asyncio
+async def test_http_get_json_does_not_follow_redirect_when_disabled(monkeypatch) -> None:
+    observed_urls = []
+
+    class DummyResponse:
+        headers = {"content-length": "2", "location": "https://overpass-api.de/allowed"}
+        status_code = 302
+        history = []
+        url = "https://nominatim.openstreetmap.org/search"
+        content = b"{}"
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {}
+
+    class DummyClient:
+        async def get(self, url, params=None, headers=None):
+            observed_urls.append(url)
+            return DummyResponse()
+
+    async def fake_get_http_client(self):
+        return DummyClient()
+
+    monkeypatch.setattr(OsmSearcher, "_get_http_client", fake_get_http_client)
+    settings = _base_settings(http_follow_redirects=False, http_max_response_bytes=1024)
+    searcher = OsmSearcher(settings, user_valves=None, event_emitter=None)
+
+    await searcher._http_get_json(
+        "https://nominatim.openstreetmap.org/search",
+        params={"q": "fixture"},
+        headers={"User-Agent": "ua", "From": "from@example.com"},
+    )
+
+    assert observed_urls == ["https://nominatim.openstreetmap.org/search"]
+
+
+@pytest.mark.asyncio
+async def test_http_get_json_allows_validated_allowlisted_redirect(monkeypatch) -> None:
+    observed_urls = []
+
+    class Redirect:
+        headers = {"content-length": "2", "location": "https://overpass-api.de/allowed"}
+        status_code = 302
+        history = []
+        url = "https://nominatim.openstreetmap.org/search"
+        content = b"{}"
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {}
+
+    class Success:
+        headers = {"content-length": "2"}
+        status_code = 200
+        history = []
+        url = "https://overpass-api.de/allowed"
+        content = b"{}"
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"allowed": True}
+
+    class DummyClient:
+        async def get(self, url, params=None, headers=None):
+            observed_urls.append(url)
+            return Redirect() if len(observed_urls) == 1 else Success()
+
+    async def fake_get_http_client(self):
+        return DummyClient()
+
+    monkeypatch.setattr(OsmSearcher, "_get_http_client", fake_get_http_client)
+    settings = _base_settings(http_follow_redirects=True, http_max_response_bytes=1024)
+    searcher = OsmSearcher(settings, user_valves=None, event_emitter=None)
+
+    result = await searcher._http_get_json(
+        "https://nominatim.openstreetmap.org/search",
+        params={"q": "fixture"},
+        headers={"User-Agent": "ua", "From": "from@example.com"},
+    )
+
+    assert result == {"allowed": True}
+    assert observed_urls == [
+        "https://nominatim.openstreetmap.org/search",
+        "https://overpass-api.de/allowed",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_nominatim_http_failures_raise_explicit_upstream_error(monkeypatch, caplog) -> None:
+    settings = _base_settings(
+        user_agent="percival-osm-test/1.0",
+        from_header="test@example.com",
+        http_max_retries=0,
+    )
+    searcher = OsmSearcher(settings, user_valves=None)
+
+    class FailingClient:
+        async def get(self, url, params=None, headers=None):
+            request = httpx.Request("GET", url, params=params)
+            if params["q"] == "fixture-429":
+                response = httpx.Response(429, request=request)
+                raise httpx.HTTPStatusError("rate limited", request=request, response=response)
+            if params["q"] == "fixture-503":
+                response = httpx.Response(503, request=request)
+                raise httpx.HTTPStatusError("unavailable", request=request, response=response)
+            raise httpx.ReadTimeout("private-query-token", request=request)
+
+        async def aclose(self):
+            return None
+
+    async def fake_get_http_client(self):
+        return FailingClient()
+
+    monkeypatch.setattr(OsmSearcher, "_get_http_client", fake_get_http_client)
+    for query in ("fixture-429", "fixture-503", "fixture-timeout"):
+        with pytest.raises(server_mod.UpstreamRequestError):
+            await searcher.nominatim_search(query, limit=1)
+
+    assert "private-query-token" not in caplog.text

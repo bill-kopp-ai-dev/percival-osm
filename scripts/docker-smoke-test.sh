@@ -195,8 +195,13 @@ printf '\n[smoke] HTTP auth, initialize, loopback bind and health probe passed\n
 
 docker stop --time 10 "${HTTP_CID}" >/dev/null
 HTTP_EXIT=$(docker inspect --format '{{.State.ExitCode}}' "${HTTP_CID}")
-if [ "${HTTP_EXIT}" = "137" ]; then
-    echo "error: HTTP server failed to stop before SIGKILL" >&2
+if [ "${HTTP_EXIT}" != "0" ]; then
+    echo "error: HTTP server shutdown returned unexpected exit code ${HTTP_EXIT}" >&2
+    exit 1
+fi
+docker logs "${HTTP_CID}" >"${HTTP_LOG}" 2>&1
+if ! grep -q "Server transport stopped; in-flight work has drained or been cancelled." "${HTTP_LOG}"; then
+    echo "error: HTTP shutdown completion was not observable in stderr logs" >&2
     exit 1
 fi
 printf '[smoke] single-init HTTP shutdown passed (exit=%s)\n' "${HTTP_EXIT}"

@@ -1,5 +1,6 @@
 """Tests for osm_geocode and osm_directions."""
 
+import asyncio
 import json
 import os
 
@@ -10,7 +11,10 @@ from percival_osm_mcp.server import (
     OsmNavigator,
     OsmSearcher,
     Settings,
+    UpstreamRequestError,
     geocode_place,
+    find_address_for_coordinates,
+    find_specific_place_impl,
     get_operational_snapshot,
     reset_operational_metrics_for_tests,
     turn_by_turn_directions,
@@ -104,6 +108,9 @@ async def test_directions_returns_structured_steps(monkeypatch) -> None:
                 {"lat": 0.0, "lon": 0.0, "display_name": place},
             ]
 
+        async def aclose(self):
+            return None
+
     class FakeRouter:
         def calculate_route(self, start, destination):
             return {
@@ -145,6 +152,9 @@ async def test_directions_reports_missing_ors_provider(monkeypatch) -> None:
         async def nominatim_search(self, place, limit=1):
             return [{"lat": 0.0, "lon": 0.0, "display_name": place}]
 
+        async def aclose(self):
+            return None
+
     class FakeRouter:
         def calculate_route(self, start, destination):
             raise AssertionError("routing must not run without ORS credentials")
@@ -157,10 +167,33 @@ async def test_directions_reports_missing_ors_provider(monkeypatch) -> None:
     assert "ORS_API_KEY" in payload["message"]
 
 
+@pytest.mark.asyncio
+async def test_navigate_reports_missing_ors_provider_without_fake_route(monkeypatch) -> None:
+    class FakeSearcher:
+        async def nominatim_search(self, place, limit=1):
+            return [{"lat": 40.0, "lon": -70.0, "display_name": place}]
+
+        async def aclose(self):
+            return None
+
+    class FakeRouter:
+        def calculate_route(self, start, destination):
+            raise AssertionError("routing must not run without ORS credentials")
+
+    monkeypatch.setattr(server_mod, "OsmSearcher", lambda *a, **kw: FakeSearcher())
+    monkeypatch.setattr(server_mod, "OrsRouter", lambda *a, **kw: FakeRouter())
+    result = await OsmNavigator(_base_settings(), user_valves=None).navigate("A", "B")
+    payload = json.loads(result)
+    assert payload["status"] == "provider_not_configured"
+
+
 async def test_directions_returns_no_results_when_search_empty(monkeypatch) -> None:
     class FakeSearcher:
         async def nominatim_search(self, place, limit=1):
             return []
+
+        async def aclose(self):
+            return None
 
     monkeypatch.setattr(server_mod, "OsmSearcher", lambda *a, **kw: FakeSearcher())
 
@@ -170,6 +203,120 @@ async def test_directions_returns_no_results_when_search_empty(monkeypatch) -> N
 
     payload = json.loads(result)
     assert payload["status"] == "no_results"
+
+
+@pytest.mark.asyncio
+async def test_nearby_search_distinguishes_empty_provider_response_from_failure(monkeypatch) -> None:
+    settings = _base_settings(cache_file="/tmp/osm-test-empty-vs-failure.json")
+    searcher = OsmSearcher(settings, user_valves=None)
+
+    async def no_place(*args, **kwargs):
+        return []
+
+    async def unavailable(*args, **kwargs):
+        raise UpstreamRequestError("Nominatim unavailable")
+
+    monkeypatch.setattr(searcher, "nominatim_search", no_place)
+    empty = await searcher.search_nearby("Nowhere", ["amenity"], category="test")
+    assert json.loads(empty["results"])["status"] == "no_results"
+
+    monkeypatch.setattr(searcher, "nominatim_search", unavailable)
+    failed = await searcher.search_nearby("Somewhere", ["amenity"], category="test")
+    assert json.loads(failed["results"])["status"] == "upstream_error"
+
+
+@pytest.mark.asyncio
+async def test_empty_overpass_response_is_no_results_and_failure_is_upstream_error(monkeypatch) -> None:
+    settings = _base_settings(cache_file="/tmp/osm-test-overpass-empty-vs-failure.json")
+    searcher = OsmSearcher(settings, user_valves=None)
+    resolved = [{
+        "lat": "40.0",
+        "lon": "-70.0",
+        "display_name": "Fixtureville",
+        "boundingbox": ["39", "41", "-71", "-69"],
+    }]
+
+    async def found_place(*args, **kwargs):
+        return resolved
+
+    async def empty_overpass(*args, **kwargs):
+        return [], []
+
+    async def failed_overpass(*args, **kwargs):
+        raise UpstreamRequestError("Overpass unavailable")
+
+    monkeypatch.setattr(searcher, "nominatim_search", found_place)
+    monkeypatch.setattr(searcher, "overpass_search", empty_overpass)
+    empty = await searcher.search_nearby("Fixtureville", ["amenity"], category="test")
+    assert json.loads(empty["results"])["status"] == "no_results"
+    assert empty["things"] == []
+
+    monkeypatch.setattr(searcher, "overpass_search", failed_overpass)
+    failed = await searcher.search_nearby("Fixtureville", ["amenity"], category="test")
+    assert json.loads(failed["results"])["status"] == "upstream_error"
+
+
+@pytest.mark.asyncio
+async def test_incomplete_nominatim_bbox_is_reported_as_upstream_error(monkeypatch) -> None:
+    settings = _base_settings(cache_file="/tmp/osm-test-incomplete-bbox.json")
+    searcher = OsmSearcher(settings, user_valves=None)
+
+    async def incomplete_place(*args, **kwargs):
+        return [{"lat": "40", "lon": "-70", "display_name": "Fixtureville"}]
+
+    monkeypatch.setattr(searcher, "nominatim_search", incomplete_place)
+    result = await searcher.search_nearby("Fixtureville", ["amenity"], category="test")
+    assert json.loads(result["results"])["status"] == "upstream_error"
+
+
+@pytest.mark.asyncio
+async def test_nominatim_tool_payloads_report_upstream_failure(monkeypatch) -> None:
+    class FailedSearcher:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def nominatim_search(self, *args, **kwargs):
+            raise UpstreamRequestError("fixture failure")
+
+        async def nominatim_reverse(self, *args, **kwargs):
+            raise UpstreamRequestError("fixture failure")
+
+        async def aclose(self):
+            return None
+
+    monkeypatch.setattr(server_mod, "OsmSearcher", FailedSearcher)
+    monkeypatch.setattr(server_mod, "valves", _base_settings())
+    monkeypatch.setattr(server_mod, "user_valves", None)
+
+    class ContextStub:
+        def info(self, message):
+            return None
+
+    place = json.loads(await find_specific_place_impl("Fixtureville", "compact"))
+    geocode = json.loads(await geocode_place("Fixtureville"))
+    reverse = json.loads(
+        await find_address_for_coordinates(40.0, -70.0, ctx=ContextStub())
+    )
+    assert {place["status"], geocode["status"], reverse["status"]} == {"upstream_error"}
+
+
+@pytest.mark.asyncio
+async def test_searcher_shutdown_drains_then_cancels_orphaned_distance_task(monkeypatch) -> None:
+    settings = _base_settings(cache_file="/tmp/osm-test-shutdown.json")
+    searcher = OsmSearcher(settings, user_valves=None)
+    monkeypatch.setattr(server_mod, "SHUTDOWN_DRAIN_TIMEOUT_SECONDS", 0.01)
+
+    async def never_finishes(*args, **kwargs):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(searcher, "calculate_navigation_distance", never_finishes)
+    caller = asyncio.create_task(searcher._resolve_distance("fixture-key", {}, {}))
+    await asyncio.sleep(0)
+    await searcher.aclose()
+
+    assert caller.cancelled()
+    assert not searcher._distance_tasks
+    assert not searcher._distance_futures
 
 
 def test_legacy_aliases_registration_can_be_disabled(monkeypatch) -> None:
