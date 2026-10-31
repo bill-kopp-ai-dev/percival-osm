@@ -1,6 +1,6 @@
 # Percival OSM — perfil de integração
 
-**Revisado:** 2026-10-30  
+**Revisado:** 2026-10-31
 **Owner:** Bill Kopp, Positronic Bean Labs
 
 ## Identidade e processo
@@ -38,15 +38,34 @@
 
 ## Limite desta nota
 
-Esta nota descreve o perfil versionado neste checkout e a configuração da
-fixture Compose. O inventário somente leitura feito em 2026-10-30 pela interface
-Positronic registrou o runtime `osm` ativo/global na revisão `4`, versão `0.5.0`,
-imagem local `sha256:67f8ada639897af9ca4ca8f02e38932376f73f454db76028a3920f076011cfeb`,
-rede `bridge`, `mounts: []` e revisão de configuração `1`. A interface não
-expôs o SHA de origem da imagem instalada. O profile de mounts observado coincide
-com a declaração `mounts: []` desta nota.
+Esta nota distingue os perfis dos dois gestores. No inventário read-only de
+2026-10-31, a interface Positronic mostrou `osm` ativo/global, revisão `5`,
+configuração `3` após atualização do contato, versão `0.5.0`, imagem local
+`sha256:805b81ae60cb6726dc9d0590641abb0432557f96ed28ca5a617d7408a81f738e`,
+rede `bridge` e `mounts: []`. A inspeção local dessa imagem encontrou o label OCI
+de revisão `b39d027be449d73f90900ddd25465f575a949ba7`; é metadado declarado pela
+imagem, não uma prova criptográfica da cadeia fonte→imagem. O perfil de mounts do
+manager coincide com `mounts: []` desta nota.
 
-A configuração efetiva tem `USER_AGENT` e `FROM_HEADER` definidos; o contato
-efetivo não coincide com o email de owner informado neste projeto. O valor não é
-reproduzido aqui. Confirmar a atualização para o contato do projeto antes do
-próximo uso externo; nenhuma variável do runtime foi alterada durante o inventário.
+Após o update pela UI Percival em 2026-10-31, o inventário read-only encontrou o
+container `percival-mcp-osm` ativo na imagem local
+`sha256:3e6cc7ddf291ec5f06aa86bd21baab7ef7a6648d9f48968b7dae421cceadc8bc`,
+versão `0.5.0`, label de revisão `312964c9e8b0da41dc3e8ed3efca6cfd33362fb6` e
+sem label de worktree dirty. A referência do gestor Percival aponta para o mesmo
+image ID. O perfil amplo do broker permanece (`/` montado em `/host`, além de
+mounts explícitos); é distinto do perfil do aplicativo Positronic `mounts: []` e
+do default amplo do broker definido em `R-10`.
+
+A imagem anterior Percival `sha256:67f8ada639897af9ca4ca8f02e38932376f73f454db76028a3920f076011cfeb`
+(label de revisão `311a49d`, `worktree=dirty`) foi removida após autorização
+explícita de Bill. Não há rollback local para esse ID.
+
+Na configuração Positronic, `USER_AGENT` e `FROM_HEADER` foram atualizados para o
+contato de owner do projeto pela interface suportada; a revisão de configuração
+agora é `3`. `positronic mcp server discover osm` confirmou initialize e tools/list
+com sucesso após a alteração.
+
+O runtime Positronic continua na imagem `sha256:805b81ae60cb6726dc9d0590641abb0432557f96ed28ca5a617d7408a81f738e`,
+label de revisão `b39d027`; entre essa revisão e o candidato não há diferenças em
+código, Dockerfile, entrypoint ou lock de dependências. Nenhum update Positronic
+foi solicitado.
