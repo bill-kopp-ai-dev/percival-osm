@@ -69,10 +69,15 @@ config:
       required: true
     - name: OSM_EXPOSE_LEGACY_ALIASES
       description: >-
-        Whether to expose the 23 per-category legacy tool aliases
-        (default: true). Set to false to keep the canonical 14-tool
-        surface only.
+        Additional gate for legacy category aliases. When false, no aliases
+        are exposed even if selected by OSM_EXPOSED_TOOLS (default: true).
       example: "true"
+    - name: OSM_EXPOSED_TOOLS
+      description: >-
+        Comma-separated list of MCP tools to expose. Defaults to the eight
+        curated tools in tools.json. Set to all to expose every implemented
+        tool, subject to OSM_EXPOSE_LEGACY_ALIASES.
+      example: osm_find_nearby,osm_find_place,osm_find_address,osm_geocode,osm_directions,osm_get_health,osm_get_security_metrics,osm_get_version
     - name: MCP_OSM_AUTH_TOKEN
       description: >-
         Bearer token required when the HTTP transport is bound to a
@@ -95,8 +100,8 @@ config:
         type: string
         title: OpenRouteService API key
         description: >-
-          Optional for search tools; required by osm_navigate and
-          osm_directions. Without it, route tools report
+          Optional for search tools; required by osm_directions and the
+          optional osm_navigate tool. Without it, route tools report
           provider_not_configured. Haversine is only used to choose the
           routing profile when ORS is configured.
     required:

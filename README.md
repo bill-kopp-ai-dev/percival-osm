@@ -22,7 +22,8 @@ Operating System designed for autonomy, security, and absolute privacy.
 It was originally forked from `lowlyocean/mcp-osm` and re-engineered for
 production use inside `percival.OS_Dev`:
 
-- 30+ curated geospatial tools (`osm_find_*`, `osm_navigate`, `osm_directions`, …).
+- 8 curated geospatial tools exposed by default; other implemented tools can be
+  selectively re-exposed through configuration.
 - 3 **prompt primitives** to teach the agent which tool to call.
 - 2 **resource primitives** for live policy / category reference.
 - Structured logging to stderr (preserves the MCP stdio stream).
@@ -53,28 +54,23 @@ core principles:
 
 ## 🚀 Features & Tools
 
-### Canonical tools (always available)
+### Tools exposed by default
 
 | Tool | Purpose | Recommended when… |
 |---|---|---|
 | `osm_find_nearby` | Search POIs by category near a place | you know *what* and *where* |
-| `osm_find_nearby_detailed` | Same, with full address + tags per result | you need deeper context per POI |
 | `osm_find_place` | Find a named location by name + city | you have a specific name (e.g. "Eiffel Tower") |
-| `osm_find_place_detailed` | Same, with full address breakdown | you need the same with extra detail |
-| `osm_find_nearby_store` | Find a store near coordinates | you have GPS coords and a category |
 | `osm_find_address` | Coordinates → address (via Nominatim `/reverse`) | the user has GPS and wants a place name |
 | `osm_geocode` | Address / place name → coordinates only | you only need lat/lon |
-| `osm_navigate` | Route summary between A and B | distance + ETA only |
-| `osm_directions` | Step-by-step instructions A → B | the agent walks the user through each maneuver |
+| `osm_directions` | Route summary and structured step-by-step instructions A → B | route details are needed |
 | `osm_get_health` | Uptime, per-tool call/error counters, last failure | on-call triage |
-| `osm_get_version` | Server version, process start time | deployment auditing |
 | `osm_get_security_metrics` | Security counter snapshot | audit / incident response |
-| `osm_get_status` | Short human-readable status string | quick smoke check |
+| `osm_get_version` | Server version, process start time | deployment auditing |
 
-### Legacy category aliases (default ON, controlled by `OSM_EXPOSE_LEGACY_ALIASES`)
+### Optional tools retained for compatibility
 
-23 per-category shortcuts — each one is a thin alias for `osm_find_nearby`
-with the `category` parameter pre-filled:
+All other handlers remain implemented. The 23 category-specific aliases are
+thin shortcuts for `osm_find_nearby` with `category` pre-filled:
 
 `osm_find_groceries`, `osm_find_bakeries`, `osm_find_food`,
 `osm_find_swimming`, `osm_find_playgrounds`, `osm_find_recreation`,
@@ -85,9 +81,13 @@ with the `category` parameter pre-filled:
 `osm_find_electrical`, `osm_find_electronics`, `osm_find_doctors`,
 `osm_find_hospitals`, `osm_find_pharmacy`.
 
-Set `OSM_EXPOSE_LEGACY_ALIASES=false` to expose only the canonical tools
-(useful for new deployments where the per-category aliases would just
-bloat the tool list shown to the agent).
+The default `OSM_EXPOSED_TOOLS` allowlist contains only the eight tools above.
+Set it to a comma-separated list of exact tool names to re-expose selected
+handlers, or to `all` to expose all 14 canonical tools and (when enabled) all
+23 category aliases. `OSM_EXPOSE_LEGACY_ALIASES=false` remains an independent
+gate that suppresses every category alias, including when `all` is selected.
+Unknown names and mixing `all` with individual names fail server startup. Apply
+changes by restarting the MCP server process.
 
 ---
 
@@ -105,7 +105,7 @@ Femtobot surfaces these as `mcp_percival_osm_prompt_<name>` and
 | Prompt | Purpose |
 |---|---|
 | `osm_recipe_quick_search` | Step-by-step recipe for a quick POI search near a place. Includes the canonical `osm_find_nearby` decision tree and failure modes. |
-| `osm_tool_chooser` | Decision table mapping user intents to the right tool (`find_nearby` vs `find_place` vs `geocode` vs `navigate` vs `directions`). |
+| `osm_tool_chooser` | Decision table mapping user intents to the default tools (`find_nearby`, `find_place`, geocoding, and directions). |
 | `osm_output_format` | Canonical markdown templates for rendering nearby-search, route, and geocode results. |
 
 ### Resources — `read_resource(...)`
@@ -158,10 +158,10 @@ tokens unless the agent explicitly asks for them.
           "osm_find_nearby",
           "osm_find_place",
           "osm_find_address",
-          "osm_navigate",
           "osm_directions",
           "osm_geocode",
           "osm_get_health",
+          "osm_get_security_metrics",
           "osm_get_version"
         ]
       }
@@ -183,8 +183,9 @@ See [`.env.example`](./.env.example) for the canonical list (every
 variable the server recognises, with its default). Highlights:
 
 ```bash
-# Behavior
-OSM_EXPOSE_LEGACY_ALIASES=true          # set false for a slim tool list
+# Tool exposure (default: the eight tools listed above)
+OSM_EXPOSED_TOOLS=osm_find_nearby,osm_find_place,osm_find_address,osm_geocode,osm_directions,osm_get_health,osm_get_security_metrics,osm_get_version
+OSM_EXPOSE_LEGACY_ALIASES=true          # additional gate for category aliases
 OSM_NOMINATIM_RATE_LIMIT_RPS=1.0        # respect Nominatim usage policy
 OSM_NOMINATIM_RATE_LIMIT_BURST=2        # small burst above the average
 OSM_RESPONSE_MODE=compact               # compact | detailed
@@ -490,6 +491,11 @@ Every blocking or failure path increments a counter exposed via
 ---
 
 ## 📝 Changelog
+
+### Unreleased
+- Default MCP exposure reduced to eight curated tools using the
+  `OSM_EXPOSED_TOOLS` allowlist. All prior handlers and category aliases remain
+  implemented and can be explicitly re-enabled.
 
 ### 0.5.0 — current
 - **Bug fixes (code review round 1)**:

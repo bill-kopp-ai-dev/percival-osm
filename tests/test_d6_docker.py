@@ -262,7 +262,7 @@ def test_docker_mcp_catalog_server_yaml_minimum_fields() -> None:
     assert "FROM_HEADER" in str(payload["config"]).upper()
 
 
-def test_docker_mcp_catalog_tools_json_has_canonical_tools() -> None:
+def test_docker_mcp_catalog_tools_json_matches_default_exposure() -> None:
     import json
 
     tools = json.loads(CATALOG_TOOLS.read_text(encoding="utf-8"))
@@ -272,13 +272,12 @@ def test_docker_mcp_catalog_tools_json_has_canonical_tools() -> None:
         "osm_find_place",
         "osm_find_address",
         "osm_geocode",
-        "osm_navigate",
         "osm_directions",
         "osm_get_health",
+        "osm_get_security_metrics",
         "osm_get_version",
     }
-    missing = expected - names
-    assert not missing, f"tools.json missing canonical tools: {sorted(missing)}"
+    assert names == expected, f"tools.json default tool surface differs: {sorted(names ^ expected)}"
 
 
 def test_docker_mcp_catalog_readme_links_back_to_repo() -> None:

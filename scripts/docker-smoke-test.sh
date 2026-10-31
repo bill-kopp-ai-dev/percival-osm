@@ -114,7 +114,6 @@ run "stdio MCP initialize and canonical tools/list" \
         --expected-tool osm_find_place \
         --expected-tool osm_find_address \
         --expected-tool osm_geocode \
-        --expected-tool osm_navigate \
         --expected-tool osm_directions \
         --expected-tool osm_get_health \
         --expected-tool osm_get_version \

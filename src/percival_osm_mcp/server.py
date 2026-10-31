@@ -179,6 +179,13 @@ class Settings(BaseSettings):
             "OSM_EXPOSE_LEGACY_ALIASES",
         ),
     )
+    exposed_tools: str = Field(
+        default=(
+            "osm_find_nearby,osm_find_place,osm_find_address,osm_geocode,"
+            "osm_directions,osm_get_health,osm_get_security_metrics,osm_get_version"
+        ),
+        validation_alias=AliasChoices("exposed_tools", "OSM_EXPOSED_TOOLS"),
+    )
     log_format: str = Field(
         default="plain",
         validation_alias=AliasChoices("log_format", "OSM_LOG_FORMAT"),
@@ -371,6 +378,63 @@ try:
 except PackageNotFoundError:
     SERVER_VERSION = "0.0.0"
 mcp._mcp_server.version = SERVER_VERSION
+
+CANONICAL_TOOL_NAMES = frozenset(
+    {
+        "osm_find_address",
+        "osm_find_nearby_store",
+        "osm_find_place",
+        "osm_find_place_detailed",
+        "osm_geocode",
+        "osm_navigate",
+        "osm_directions",
+        "osm_find_nearby",
+        "osm_find_nearby_detailed",
+        "osm_find_other",
+        "osm_get_security_metrics",
+        "osm_get_version",
+        "osm_get_health",
+        "osm_get_status",
+    }
+)
+
+
+def _requested_tool_names() -> set[str]:
+    return {name.strip() for name in valves.exposed_tools.split(",") if name.strip()}
+
+
+def _tool_is_exposed(name: str) -> bool:
+    requested = _requested_tool_names()
+    return "all" in {item.lower() for item in requested} or name in requested
+
+
+def _conditionally_register_tool(name: str):
+    """Register a handler with FastMCP only when selected by configuration."""
+
+    def decorator(handler):
+        if _tool_is_exposed(name):
+            return mcp.tool(name)(handler)
+        return handler
+
+    return decorator
+
+
+def validate_tool_exposure_configuration() -> None:
+    """Fail clearly for malformed exposure allowlists or unknown tool names."""
+    requested = _requested_tool_names()
+    if not requested:
+        raise ValueError("OSM_EXPOSED_TOOLS must list at least one tool name or 'all'.")
+    normalized = {item.lower() for item in requested}
+    if "all" in normalized and normalized != {"all"}:
+        raise ValueError("OSM_EXPOSED_TOOLS accepts 'all' by itself, not with tool names.")
+
+    alias_names = set(LEGACY_CATEGORY_ALIASES)
+    valid_names = set(CANONICAL_TOOL_NAMES) | alias_names
+    unknown = sorted(name for name in requested if name.lower() != "all" and name not in valid_names)
+    if unknown:
+        raise ValueError(
+            "Unknown tool name(s) in OSM_EXPOSED_TOOLS: " + ", ".join(unknown)
+        )
 
 POI_CATEGORY_SPECS: dict[str, dict[str, Any]] = {
     "groceries": {
@@ -3235,7 +3299,7 @@ def _track(tool_name: str):
 
 
 @_track("osm_find_address")
-@mcp.tool("osm_find_address")
+@_conditionally_register_tool("osm_find_address")
 async def find_address_for_coordinates(
      latitude: Annotated[
          float,
@@ -3325,7 +3389,7 @@ async def find_address_for_coordinates(
     )
 
 @_track("osm_find_nearby_store")
-@mcp.tool("osm_find_nearby_store")
+@_conditionally_register_tool("osm_find_nearby_store")
 async def find_store_or_place_near_coordinates(
     store_or_business_name: Annotated[
         str,
@@ -3365,7 +3429,7 @@ async def find_store_or_place_near_coordinates(
     return await find_specific_place(query, ctx)
 
 @_track("osm_find_place")
-@mcp.tool("osm_find_place")
+@_conditionally_register_tool("osm_find_place")
 async def find_specific_place(
      address_or_place: Annotated[
          str,
@@ -3397,7 +3461,7 @@ async def find_specific_place(
 
 
 @_track("osm_find_place_detailed")
-@mcp.tool("osm_find_place_detailed")
+@_conditionally_register_tool("osm_find_place_detailed")
 async def find_specific_place_detailed(
      address_or_place: Annotated[
          str,
@@ -3428,7 +3492,7 @@ async def find_specific_place_detailed(
 
 
 @_track("osm_geocode")
-@mcp.tool("osm_geocode")
+@_conditionally_register_tool("osm_geocode")
 async def geocode_place(
     place: Annotated[
         str,
@@ -3523,7 +3587,7 @@ async def geocode_place(
 
 
 @_track("osm_navigate")
-@mcp.tool("osm_navigate")
+@_conditionally_register_tool("osm_navigate")
 async def navigate_between_places(
     start_address_or_place: Annotated[
         str,
@@ -3560,7 +3624,7 @@ async def navigate_between_places(
 
 
 @_track("osm_directions")
-@mcp.tool("osm_directions")
+@_conditionally_register_tool("osm_directions")
 async def turn_by_turn_directions(
     start_address_or_place: Annotated[
         str,
@@ -3595,7 +3659,7 @@ async def turn_by_turn_directions(
 
 
 @_track("osm_find_nearby")
-@mcp.tool("osm_find_nearby")
+@_conditionally_register_tool("osm_find_nearby")
 async def find_places_near_place(
       place: Annotated[
           str,
@@ -3636,7 +3700,7 @@ async def find_places_near_place(
 
 
 @_track("osm_find_nearby_detailed")
-@mcp.tool("osm_find_nearby_detailed")
+@_conditionally_register_tool("osm_find_nearby_detailed")
 async def find_places_near_place_detailed(
       place: Annotated[
           str,
@@ -3726,7 +3790,8 @@ if valves.expose_legacy_aliases:
             return await search_category_near_place(place=place, category=category_key)
 
         _alias_handler.__name__ = f"find_{_category_key}_near_place_alias"
-        mcp.tool(_tool_name)(_alias_handler)
+        if _tool_is_exposed(_tool_name):
+            mcp.tool(_tool_name)(_alias_handler)
 else:
     logger.info(
         "Legacy category aliases disabled (OSM_EXPOSE_LEGACY_ALIASES=false); "
@@ -3739,7 +3804,7 @@ else:
 # can direct it to report its capabilities and tell the user how
 # to use it. It's not perfect, but it works sometimes.
 @_track("osm_find_other")
-@mcp.tool("osm_find_other")
+@_conditionally_register_tool("osm_find_other")
 async def find_other_things_near_place(
     place: Annotated[
         str,
@@ -3795,7 +3860,7 @@ async def find_other_things_near_place(
 
 
 @_track("osm_get_security_metrics")
-@mcp.tool("osm_get_security_metrics")
+@_conditionally_register_tool("osm_get_security_metrics")
 def get_security_metrics() -> Annotated[
     str,
     Field(
@@ -3820,7 +3885,7 @@ def get_security_metrics() -> Annotated[
 
 
 @_track("osm_get_version")
-@mcp.tool("osm_get_version")
+@_conditionally_register_tool("osm_get_version")
 def get_version() -> Annotated[
     str,
     Field(
@@ -3853,7 +3918,7 @@ def get_version() -> Annotated[
 
 
 @_track("osm_get_health")
-@mcp.tool("osm_get_health")
+@_conditionally_register_tool("osm_get_health")
 def get_health() -> Annotated[
     str,
     Field(
@@ -3881,7 +3946,7 @@ def get_health() -> Annotated[
 
 
 @_track("osm_get_status")
-@mcp.tool("osm_get_status")
+@_conditionally_register_tool("osm_get_status")
 def get_status() -> Annotated[
     str,
     Field(
@@ -3906,6 +3971,7 @@ async def run_server(
     """
     Unified server runner supporting stdio, SSE, and streamable-http modes.
     """
+    validate_tool_exposure_configuration()
     validate_upstream_runtime_configuration(valves)
     _validate_http_runtime_security(
         mode=mode,

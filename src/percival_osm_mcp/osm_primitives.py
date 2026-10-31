@@ -43,8 +43,7 @@ Decision tree:
 
 1. If the user named a category AND a place (e.g. "cafés near Vila Madalena"):
    - Call `osm_find_nearby` with `place`, `category="food"`, `limit=5`.
-   - DO NOT call `osm_find_food` (or other legacy aliases) unless you've
-     verified they're exposed via `osm_get_health` or `OSM_EXPOSE_LEGACY_ALIASES=true`.
+   - Do not call category-specific aliases; they are not exposed by default.
 2. If the user only gave coordinates:
    - Call `osm_find_address` first to get a human-readable place, then use
      that place string for `osm_find_nearby`.
@@ -71,15 +70,13 @@ Use this guide to pick the right percival-osm tool.
 | User intent                                           | Tool to call             |
 |-------------------------------------------------------|--------------------------|
 | Find POIs of a category near a place                  | `osm_find_nearby`        |
-| Find POIs with extra context (opening hours, website) | `osm_find_nearby_detailed` |
 | Find a specific named place ("Eiffel Tower")          | `osm_find_place`         |
-| Same with full details                                | `osm_find_place_detailed` |
 | GPS coordinates → address / place name                | `osm_find_address`       |
 | Address / place name → GPS coordinates only           | `osm_geocode`            |
-| Route summary (distance + travel time) between A→B   | `osm_navigate`           |
-| Step-by-step instructions A→B                         | `osm_directions`         |
+| Route summary or step-by-step directions A→B          | `osm_directions`         |
 | Check server status / uptime                          | `osm_get_health`         |
 | Get server version                                    | `osm_get_version`        |
+| Read security event counters                          | `osm_get_security_metrics` |
 | Read the security policy the server enforces          | `osm://security/nanobot-policy` |
 | List supported POI categories                         | `osm://categories`       |
 
@@ -198,7 +195,7 @@ _CATEGORIES_RESOURCE = """\
 The `category` parameter of `osm_find_nearby` accepts the following values.
 Each one maps to a curated set of OpenStreetMap tags.
 
-| Category              | Aliases (when `OSM_EXPOSE_LEGACY_ALIASES=true`) |
+| Category              | Legacy alias (opt-in) |
 |-----------------------|------------------------------------------------|
 | `food`                | `osm_find_food`                                |
 | `groceries`           | `osm_find_groceries`                           |
@@ -226,12 +223,15 @@ Each one maps to a curated set of OpenStreetMap tags.
 
 Notes:
 
-- If `OSM_EXPOSE_LEGACY_ALIASES=false`, the agent MUST use
-  `osm_find_nearby` with one of the canonical category keys above. The
-  aliases will not be present in the tool list.
-- The fallback tool (`osm_find_other`) accepts arbitrary category strings
-  but is best-effort: it picks the closest match from the canonical list
-  above.
+- `osm_find_nearby` is the only category-search tool exposed by default. Use
+  one of its canonical category keys above.
+- Aliases remain implemented for compatibility. To expose one, list its exact
+  name in `OSM_EXPOSED_TOOLS`; `OSM_EXPOSE_LEGACY_ALIASES=false` suppresses all
+  aliases regardless of that list.
+- Set `OSM_EXPOSED_TOOLS=all` to expose all implemented tools (aliases remain
+  subject to `OSM_EXPOSE_LEGACY_ALIASES`).
+- Unsupported categories are reported by `osm_find_nearby`; the optional
+  `osm_find_other` handler is not exposed by default.
 """
 
 

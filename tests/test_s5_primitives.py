@@ -1,7 +1,10 @@
 """Tests for MCP prompt and resource primitives."""
 
 import json
+import os
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -48,7 +51,6 @@ async def test_get_prompt_tool_chooser_has_table():
         "osm_find_place",
         "osm_find_address",
         "osm_geocode",
-        "osm_navigate",
         "osm_directions",
     ):
         assert tool in rendered, f"{tool} should appear in tool chooser"
@@ -178,7 +180,7 @@ async def test_canonical_tools_all_tracked():
     ``tool_calls`` map in ``osm_get_health`` would be incomplete.
 
     We assert statically that the source has @_track directly above
-    every @mcp.tool for the canonical tools.
+    every conditional FastMCP registration for the canonical tools.
     """
     src = Path(server_mod.__file__).read_text(encoding="utf-8")
     expected_tracked = [
@@ -198,10 +200,11 @@ async def test_canonical_tools_all_tracked():
         "osm_get_status",
     ]
     for tool_name in expected_tracked:
-        # Match `@_track("<name>")` immediately above `@mcp.tool("<name>")`.
+        # Match `@_track("<name>")` immediately above the conditional
+        # FastMCP registration for that handler.
         # We use a non-greedy .+? with DOTALL to span the gap between them.
         pattern = (
-            r'@_track\(["\']' + re.escape(tool_name) + r'["\']\)\s*\n\s*@mcp\.tool\(["\']'
+            r'@_track\(["\']' + re.escape(tool_name) + r'["\']\)\s*\n\s*@_conditionally_register_tool\(["\']'
             + re.escape(tool_name) + r'["\']'
         )
         assert re.search(pattern, src), (
@@ -296,26 +299,89 @@ async def test_single_flight_distance_dedupes_concurrent_calls(monkeypatch):
     )
 
 
-async def test_legacy_aliases_increment_only_the_called_alias(monkeypatch):
-    from percival_osm_mcp import server as server_mod
+async def test_legacy_aliases_increment_only_the_called_alias():
+    script = r'''
+import asyncio, json
+from percival_osm_mcp import server as server_mod
 
-    server_mod.reset_operational_metrics_for_tests()
-    categories = []
+categories = []
+async def fake_search_category_near_place(*, place, category, **kwargs):
+    categories.append(category)
+    return '{"status":"no_results"}'
 
-    async def fake_search_category_near_place(*, place, category, **kwargs):
-        categories.append(category)
-        return '{"status":"no_results"}'
-
-    monkeypatch.setattr(
-        server_mod, "search_category_near_place", fake_search_category_near_place
+server_mod.search_category_near_place = fake_search_category_near_place
+server_mod.reset_operational_metrics_for_tests()
+async def main():
+    await server_mod.mcp._tool_manager._tools["osm_find_pharmacy"].fn(place="Fixtureville")
+    await server_mod.mcp._tool_manager._tools["osm_find_bakeries"].fn(place="Fixtureville")
+    print(json.dumps({"categories": categories, "calls": server_mod.get_operational_snapshot()["tool_calls"]}))
+asyncio.run(main())
+'''
+    env = os.environ.copy()
+    env["OSM_EXPOSED_TOOLS"] = "osm_find_pharmacy,osm_find_bakeries"
+    env["OSM_EXPOSE_LEGACY_ALIASES"] = "true"
+    env["PYTHONPATH"] = str(Path(server_mod.__file__).parents[1])
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=Path(server_mod.__file__).parents[2],
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
     )
-    first = server_mod.mcp._tool_manager._tools["osm_find_pharmacy"]
-    second = server_mod.mcp._tool_manager._tools["osm_find_bakeries"]
-    await first.fn(place="Fixtureville")
-    await second.fn(place="Fixtureville")
+    payload = json.loads(result.stdout)
+    assert payload["categories"] == ["pharmacies", "bakeries"]
+    assert payload["calls"]["osm_find_pharmacy"] == 1
+    assert payload["calls"]["osm_find_bakeries"] == 1
+    assert payload["calls"].get("osm_find_nearby", 0) == 0
 
-    calls = server_mod.get_operational_snapshot()["tool_calls"]
-    assert categories == ["pharmacies", "bakeries"]
-    assert calls["osm_find_pharmacy"] == 1
-    assert calls["osm_find_bakeries"] == 1
-    assert calls.get("osm_find_nearby", 0) == 0
+
+def _tool_names_for_exposure(
+    exposed_tools: str, legacy_aliases: str = "true"
+) -> set[str]:
+    script = """import asyncio, json\nfrom percival_osm_mcp.server import mcp\nprint(json.dumps(sorted(tool.name for tool in asyncio.run(mcp.list_tools()))))\n"""
+    env = os.environ.copy()
+    env["OSM_EXPOSED_TOOLS"] = exposed_tools
+    env["OSM_EXPOSE_LEGACY_ALIASES"] = legacy_aliases
+    env["PYTHONPATH"] = str(Path(server_mod.__file__).parents[1])
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=Path(server_mod.__file__).parents[2],
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return set(json.loads(result.stdout))
+
+
+async def test_default_exposure_is_exactly_the_curated_eight_tools():
+    names = {tool.name for tool in await mcp.list_tools()}
+    assert names == {
+        "osm_find_nearby",
+        "osm_find_place",
+        "osm_find_address",
+        "osm_geocode",
+        "osm_directions",
+        "osm_get_health",
+        "osm_get_security_metrics",
+        "osm_get_version",
+    }
+    # The implementations and aliases remain available in the codebase.
+    assert len(server_mod.CANONICAL_TOOL_NAMES) == 14
+    assert len(server_mod.LEGACY_CATEGORY_ALIASES) == 23
+
+
+def test_tools_can_be_reenabled_individually_or_all_at_once():
+    assert _tool_names_for_exposure("osm_navigate,osm_find_pharmacy") == {
+        "osm_navigate",
+        "osm_find_pharmacy",
+    }
+    assert len(_tool_names_for_exposure("all")) == 37
+    assert len(_tool_names_for_exposure("all", legacy_aliases="false")) == 14
+
+
+def test_invalid_exposure_configuration_fails_clearly(monkeypatch):
+    monkeypatch.setattr(server_mod.valves, "exposed_tools", "osm_find_nearby,osm_not_real")
+    with pytest.raises(ValueError, match="Unknown tool name.*osm_not_real"):
+        server_mod.validate_tool_exposure_configuration()

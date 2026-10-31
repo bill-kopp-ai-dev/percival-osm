@@ -6,8 +6,9 @@ OpenRouteService APIs.
 
 ## What it provides
 
-- 30+ tools for nearby searches, geocoding, reverse-geocoding, and
-  navigation.
+- 8 curated MCP tools exposed by default for nearby searches, geocoding,
+  reverse-geocoding, navigation, and operational visibility. Other tool
+  handlers remain available for explicit reactivation.
 - 3 prompt primitives that teach the agent which tool to call and how
   to render responses.
 - 2 resource primitives (`osm://categories`,
@@ -19,9 +20,9 @@ OpenRouteService APIs.
 
 ## How to use
 
-When this server is enabled in your Docker MCP Toolkit profile, the
-agent automatically discovers all of the `osm_*` tools. You can call
-them from natural language, e.g.:
+When this server is enabled in your Docker MCP Toolkit profile, the agent
+discovers the tools selected by `OSM_EXPOSED_TOOLS`. The default profile
+includes `osm_find_nearby`; for example:
 
 > "Find pharmacies within 1 km of the Eiffel Tower."
 
@@ -40,8 +41,10 @@ Optional:
 - `ORS_API_KEY` — OpenRouteService key required by routing tools. Without it,
   `osm_navigate` and `osm_directions` return `provider_not_configured`.
 - `MCP_OSM_AUTH_TOKEN` — bearer token for non-loopback HTTP transport.
-- `OSM_EXPOSE_LEGACY_ALIASES` — toggle the 23 per-category legacy tool
-  aliases (default true).
+- `OSM_EXPOSED_TOOLS` — comma-separated list of tool names; defaults to the
+  eight curated names in `tools.json`. Set to `all` to expose all handlers.
+- `OSM_EXPOSE_LEGACY_ALIASES` — additional gate for category aliases (default
+  true); aliases also need to be selected by `OSM_EXPOSED_TOOLS`.
 
 ## Documentation
 

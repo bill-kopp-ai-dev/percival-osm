@@ -16,9 +16,10 @@ controle do operador.
 
 - Servidor MCP Python (≥ 3.11) com transporte **stdio** e
   **streamable-HTTP**.
-- 30+ ferramentas canônicas (`osm_find_*`, `osm_navigate`,
-  `osm_directions`, `osm_geocode`, `osm_find_address`, …) e aliases
-  legados por categoria controláveis via `OSM_EXPOSE_LEGACY_ALIASES`.
+- 8 ferramentas MCP expostas por padrão. Todas as 14 ferramentas canônicas e
+  23 aliases por categoria permanecem implementados e podem ser selecionados
+  via `OSM_EXPOSED_TOOLS`, com aliases ainda sujeitos a
+  `OSM_EXPOSE_LEGACY_ALIASES`.
 - 3 primitivas de prompt (`osm_recipe_quick_search`, `osm_tool_chooser`,
   `osm_output_format`) e 2 primitivas de resource (`osm://categories`,
   `osm://security/nanobot-policy`).
