@@ -31,6 +31,10 @@
   Esse volume não é um bind mount nem define o perfil do manager.
 - UID/GID `10001:10001` tem escrita no cache; o path permitido é `/cache` na
   fixture Compose.
+- A leitura de caches antigos em formato de dicionário puro é best-effort: o
+  servidor os converte para o envelope atual ao carregar. JSON inválido ou
+  formato não reconhecido inicia com cache vazio; compatibilidade de cada valor
+  armazenado entre versões não é garantida.
 
 ## Limite desta nota
 
