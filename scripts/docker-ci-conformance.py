@@ -109,6 +109,18 @@ def main() -> int:
         },
         {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
         {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+        {
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {"name": "osm_get_version", "arguments": {}},
+        },
+        {
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "tools/call",
+            "params": {"name": "osm_get_health", "arguments": {}},
+        },
     )
     try:
         process = subprocess.Popen(
@@ -162,6 +174,12 @@ def main() -> int:
         send(requests[2])
         if not wait_for_response(2):
             raise RuntimeError("MCP tools/list response timed out or was invalid")
+        send(requests[3])
+        if not wait_for_response(3):
+            raise RuntimeError("MCP osm_get_version call timed out or was invalid")
+        send(requests[4])
+        if not wait_for_response(4):
+            raise RuntimeError("MCP osm_get_health call timed out or was invalid")
     except (BrokenPipeError, OSError, RuntimeError) as exc:
         process.kill()
         process.wait()
@@ -221,6 +239,39 @@ def main() -> int:
     if missing:
         print(f"tools/list missing expected tools: {missing}", file=sys.stderr)
         return 1
+
+    def tool_payload(request_id: int, name: str) -> dict:
+        result = by_id.get(request_id, {}).get("result", {})
+        if not isinstance(result, dict) or result.get("isError"):
+            raise ValueError(f"MCP {name} call returned an error")
+        content = result.get("content")
+        text = next(
+            (
+                block.get("text")
+                for block in content or []
+                if isinstance(block, dict) and block.get("type") == "text"
+            ),
+            None,
+        )
+        payload = json.loads(text) if isinstance(text, str) else None
+        if not isinstance(payload, dict) or payload.get("status") != "ok":
+            raise ValueError(f"MCP {name} call returned an invalid payload")
+        return payload
+
+    try:
+        tool_payload(3, "osm_get_version")
+        health = tool_payload(4, "osm_get_health")
+    except (TypeError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    calls = health.get("data", {}).get("tool_calls", {})
+    if calls.get("osm_get_version") != 1 or calls.get("osm_get_health") != 1:
+        print(
+            "health metrics did not count the preceding version and health calls once: "
+            f"{calls}",
+            file=sys.stderr,
+        )
+        return 1
     for item in args.secret_env:
         _, _, value = item.partition("=")
         if value and (value in result_stdout or value in result_stderr):
@@ -228,7 +279,10 @@ def main() -> int:
                 "configured environment value leaked to stdio output", file=sys.stderr
             )
             return 1
-    print(f"stdio MCP conformance passed: initialize + tools/list ({len(tools)} tools)")
+    print(
+        "stdio MCP conformance passed: initialize + tools/list + version/health "
+        f"call metrics ({len(tools)} tools)"
+    )
     return 0
 
 

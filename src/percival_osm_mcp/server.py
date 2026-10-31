@@ -117,6 +117,15 @@ class Settings(BaseSettings):
             "OSM_HTTP_RETRY_BACKOFF_SECONDS",
         ),
     )
+    upstream_tool_deadline_seconds: float = Field(
+        default=16.0,
+        gt=0,
+        le=16.0,
+        validation_alias=AliasChoices(
+            "upstream_tool_deadline_seconds",
+            "OSM_UPSTREAM_TOOL_DEADLINE_SECONDS",
+        ),
+    )
     http_follow_redirects: bool = Field(
         default=False,
         validation_alias=AliasChoices(
@@ -306,6 +315,7 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8080
 DEFAULT_AUTH_TOKEN_ENV_VAR = "MCP_OSM_AUTH_TOKEN"
 SHUTDOWN_DRAIN_TIMEOUT_SECONDS = 25
+CANCELLATION_CLEANUP_TIMEOUT_SECONDS = 2.0
 
 # Initialize FastMCP server
 mcp = FastMCP(
@@ -669,6 +679,13 @@ def record_tool_call(tool_name: str, *, error: bool = False) -> None:
         _TOOL_CALL_COUNTS[safe_name] = _TOOL_CALL_COUNTS.get(safe_name, 0) + 1
         if error:
             _TOOL_ERROR_COUNTS[safe_name] = _TOOL_ERROR_COUNTS.get(safe_name, 0) + 1
+
+
+def record_tool_error(tool_name: str) -> None:
+    """Increment only the per-tool error counter for an already-counted call."""
+    safe_name = sanitize_external_text(tool_name, max_length=80) or "unknown"
+    with _OPERATIONAL_LOCK:
+        _TOOL_ERROR_COUNTS[safe_name] = _TOOL_ERROR_COUNTS.get(safe_name, 0) + 1
 
 
 def record_upstream_failure(kind: str, message: str) -> None:
@@ -1838,19 +1855,58 @@ class OsmSearcher:
                     )
         return self._http_client
 
-    async def aclose(self) -> None:
+    async def aclose(self, *, cancel_pending: bool = False) -> None:
+        current_task = asyncio.current_task()
+        cancel_pending = cancel_pending or bool(
+            current_task is not None and current_task.cancelling()
+        )
         tasks = tuple(self._distance_tasks)
         if tasks:
-            _, pending = await asyncio.wait(
-                tasks, timeout=SHUTDOWN_DRAIN_TIMEOUT_SECONDS
-            )
+            if cancel_pending:
+                pending = tasks
+            else:
+                _, pending = await asyncio.wait(
+                    tasks, timeout=SHUTDOWN_DRAIN_TIMEOUT_SECONDS
+                )
             for task in pending:
                 task.cancel()
             if pending:
-                await asyncio.gather(*pending, return_exceptions=True)
+                for future in tuple(self._distance_futures.values()):
+                    if not future.done():
+                        future.cancel()
+                done, still_pending = await asyncio.wait(
+                    pending, timeout=CANCELLATION_CLEANUP_TIMEOUT_SECONDS
+                )
+                if done:
+                    await asyncio.gather(*done, return_exceptions=True)
+                if still_pending:
+                    logger.warning(
+                        "%d background distance task(s) did not stop within %.1fs",
+                        len(still_pending),
+                        CANCELLATION_CLEANUP_TIMEOUT_SECONDS,
+                    )
+                async with self._distance_futures_lock:
+                    self._distance_futures = {
+                        key: future
+                        for key, future in self._distance_futures.items()
+                        if not future.cancelled()
+                    }
         if self._http_client is not None:
-            await self._http_client.aclose()
-            self._http_client = None
+            client = self._http_client
+            if cancel_pending:
+                try:
+                    async with asyncio.timeout(CANCELLATION_CLEANUP_TIMEOUT_SECONDS):
+                        await client.aclose()
+                except TimeoutError:
+                    logger.warning(
+                        "HTTP client did not close within %.1fs after cancellation",
+                        CANCELLATION_CLEANUP_TIMEOUT_SECONDS,
+                    )
+                finally:
+                    self._http_client = None
+            else:
+                await client.aclose()
+                self._http_client = None
 
     def _rate_limiter_for(self, url: str) -> Optional[AsyncTokenBucket]:
         """Return the appropriate rate limiter for a given upstream URL."""
@@ -2356,7 +2412,7 @@ class OsmSearcher:
         except Exception as exc:
             await self.event_error(exc)
             logger.warning("Nominatim search request failed: %s", _upstream_error_summary(exc))
-            record_upstream_failure("NominatimSearch", type(exc).__name__)
+            record_upstream_failure("NominatimSearch", _upstream_error_summary(exc))
             raise UpstreamRequestError("Nominatim search request failed.") from exc
 
         await self.event_resolving(done=True)
@@ -2496,7 +2552,7 @@ class OsmSearcher:
         try:
             payload = await self._http_get_json(url, params=data, headers=headers)
         except Exception as exc:
-            record_upstream_failure("Overpass", type(exc).__name__)
+            record_upstream_failure("Overpass", _upstream_error_summary(exc))
             raise UpstreamRequestError("Overpass request failed.") from exc
 
         # nodes have exact GPS coordinates. we also include useful way entries,
@@ -2814,10 +2870,13 @@ async def do_osm_search(
         "Searching for [%s] (%s, etc) near place: %s", category, tags[0], place
     )
     searcher = OsmSearcher(valves, user_valves, event_emitter)
+    deadline_expired = False
     try:
-        search = await searcher.search_nearby(
+        search, deadline_expired = await _search_nearby_with_deadline(
+            searcher,
             place,
             tags,
+            timeout_seconds=float(valves.upstream_tool_deadline_seconds),
             limit=limit,
             radius=radius,
             category=category,
@@ -2825,7 +2884,7 @@ async def do_osm_search(
         )
         return search["results"]
     finally:
-        await searcher.aclose()
+        await searcher.aclose(cancel_pending=deadline_expired)
 
 
 async def do_osm_search_full(
@@ -2875,17 +2934,73 @@ async def do_osm_search_full(
         "Searching for [%s] (%s, etc) near place: %s", category, tags[0], place
     )
     searcher = OsmSearcher(valves, user_valves, event_emitter)
+    deadline_expired = False
     try:
-        return await searcher.search_nearby(
+        search, deadline_expired = await _search_nearby_with_deadline(
+            searcher,
             place,
             tags,
+            timeout_seconds=float(valves.upstream_tool_deadline_seconds),
             limit=limit,
             radius=radius,
             category=category,
             response_mode=response_mode,
         )
+        return search
     finally:
-        await searcher.aclose()
+        await searcher.aclose(cancel_pending=deadline_expired)
+
+
+async def _search_nearby_with_deadline(
+    searcher: OsmSearcher,
+    place: str,
+    tags: List[str],
+    *,
+    timeout_seconds: float,
+    limit: int,
+    radius: int,
+    category: str,
+    response_mode: Optional[str],
+) -> tuple[dict[str, Any], bool]:
+    try:
+        deadline = asyncio.timeout(timeout_seconds)
+        async with deadline:
+            result = await searcher.search_nearby(
+                place,
+                tags,
+                limit=limit,
+                radius=radius,
+                category=category,
+                response_mode=response_mode,
+            )
+        return result, False
+    except TimeoutError:
+        if not deadline.expired():
+            raise
+        logger.warning(
+            "Nearby search exceeded its %.1f second execution deadline", timeout_seconds
+        )
+        record_upstream_failure(
+            "NearbySearch", f"end-to-end deadline exceeded after {timeout_seconds:g}s"
+        )
+        query = {
+            "place": sanitize_external_text(place, max_length=220),
+            "category": sanitize_external_text(category, max_length=80),
+            "limit": int(limit),
+            "radius_m": int(radius),
+            "response_mode": normalize_response_mode(
+                response_mode, RESPONSE_MODE_COMPACT
+            ),
+        }
+        return {
+            "place_display_name": place,
+            "results": build_tool_response(
+                status="upstream_error",
+                message="Nearby search exceeded its execution deadline; retry later.",
+                query=query,
+            ),
+            "things": [],
+        }, True
 
 
 def unsupported_category_message(category: str) -> str:
@@ -3272,14 +3387,47 @@ class OsmNavigator:
 def _track(tool_name: str):
     """Decorator: increment per-tool call/error counters for operational health."""
 
+    upstream_tool_names = {
+        "osm_find_address",
+        "osm_find_nearby_store",
+        "osm_find_place",
+        "osm_find_place_detailed",
+        "osm_geocode",
+        "osm_navigate",
+        "osm_directions",
+    }
+
     def _decorator(fn):
         @functools.wraps(fn)
         async def _async_wrapper(*args, **kwargs):
             record_tool_call(tool_name)
             try:
+                if tool_name in upstream_tool_names:
+                    timeout_seconds = float(valves.upstream_tool_deadline_seconds)
+                    deadline = asyncio.timeout(timeout_seconds)
+                    try:
+                        async with deadline:
+                            return await fn(*args, **kwargs)
+                    except TimeoutError:
+                        if not deadline.expired():
+                            raise
+                        logger.warning(
+                            "%s exceeded its %.1f second execution deadline",
+                            tool_name,
+                            timeout_seconds,
+                        )
+                        record_upstream_failure(
+                            tool_name,
+                            f"end-to-end deadline exceeded after {timeout_seconds:g}s",
+                        )
+                        return build_tool_response(
+                            status="upstream_error",
+                            message="An upstream request exceeded its execution deadline; retry later.",
+                            query={},
+                        )
                 return await fn(*args, **kwargs)
             except Exception:
-                record_tool_call(tool_name, error=True)
+                record_tool_error(tool_name)
                 raise
 
         @functools.wraps(fn)
@@ -3288,7 +3436,7 @@ def _track(tool_name: str):
             try:
                 return fn(*args, **kwargs)
             except Exception:
-                record_tool_call(tool_name, error=True)
+                record_tool_error(tool_name)
                 raise
 
         if inspect.iscoroutinefunction(fn):
@@ -3298,8 +3446,8 @@ def _track(tool_name: str):
     return _decorator
 
 
-@_track("osm_find_address")
 @_conditionally_register_tool("osm_find_address")
+@_track("osm_find_address")
 async def find_address_for_coordinates(
      latitude: Annotated[
          float,
@@ -3388,8 +3536,8 @@ async def find_address_for_coordinates(
         },
     )
 
-@_track("osm_find_nearby_store")
 @_conditionally_register_tool("osm_find_nearby_store")
+@_track("osm_find_nearby_store")
 async def find_store_or_place_near_coordinates(
     store_or_business_name: Annotated[
         str,
@@ -3428,8 +3576,8 @@ async def find_store_or_place_near_coordinates(
     query = f"{store_or_business_name} {latitude},{longitude}"
     return await find_specific_place(query, ctx)
 
-@_track("osm_find_place")
 @_conditionally_register_tool("osm_find_place")
+@_track("osm_find_place")
 async def find_specific_place(
      address_or_place: Annotated[
          str,
@@ -3460,8 +3608,8 @@ async def find_specific_place(
     return await find_specific_place_impl(address_or_place, response_mode=response_mode)
 
 
-@_track("osm_find_place_detailed")
 @_conditionally_register_tool("osm_find_place_detailed")
+@_track("osm_find_place_detailed")
 async def find_specific_place_detailed(
      address_or_place: Annotated[
          str,
@@ -3491,8 +3639,8 @@ async def find_specific_place_detailed(
     return await find_specific_place_impl(address_or_place, response_mode=RESPONSE_MODE_DETAILED)
 
 
-@_track("osm_geocode")
 @_conditionally_register_tool("osm_geocode")
+@_track("osm_geocode")
 async def geocode_place(
     place: Annotated[
         str,
@@ -3586,8 +3734,8 @@ async def geocode_place(
     )
 
 
-@_track("osm_navigate")
 @_conditionally_register_tool("osm_navigate")
+@_track("osm_navigate")
 async def navigate_between_places(
     start_address_or_place: Annotated[
         str,
@@ -3623,8 +3771,8 @@ async def navigate_between_places(
     )
 
 
-@_track("osm_directions")
 @_conditionally_register_tool("osm_directions")
+@_track("osm_directions")
 async def turn_by_turn_directions(
     start_address_or_place: Annotated[
         str,
@@ -3658,8 +3806,8 @@ async def turn_by_turn_directions(
     )
 
 
-@_track("osm_find_nearby")
 @_conditionally_register_tool("osm_find_nearby")
+@_track("osm_find_nearby")
 async def find_places_near_place(
       place: Annotated[
           str,
@@ -3699,8 +3847,8 @@ async def find_places_near_place(
     )
 
 
-@_track("osm_find_nearby_detailed")
 @_conditionally_register_tool("osm_find_nearby_detailed")
+@_track("osm_find_nearby_detailed")
 async def find_places_near_place_detailed(
       place: Annotated[
           str,
@@ -3786,12 +3934,11 @@ if valves.expose_legacy_aliases:
             tool_name: str = _tool_name,
         ) -> Annotated[str, Field(description=_result_desc)]:
             """Backward-compatible alias delegating to search_category_near_place."""
-            record_tool_call(tool_name)
             return await search_category_near_place(place=place, category=category_key)
 
         _alias_handler.__name__ = f"find_{_category_key}_near_place_alias"
         if _tool_is_exposed(_tool_name):
-            mcp.tool(_tool_name)(_alias_handler)
+            mcp.tool(_tool_name)(_track(_tool_name)(_alias_handler))
 else:
     logger.info(
         "Legacy category aliases disabled (OSM_EXPOSE_LEGACY_ALIASES=false); "
@@ -3803,8 +3950,8 @@ else:
 # does not yet support. By having the model pick this function, we
 # can direct it to report its capabilities and tell the user how
 # to use it. It's not perfect, but it works sometimes.
-@_track("osm_find_other")
 @_conditionally_register_tool("osm_find_other")
+@_track("osm_find_other")
 async def find_other_things_near_place(
     place: Annotated[
         str,
@@ -3859,8 +4006,8 @@ async def find_other_things_near_place(
     return resp
 
 
-@_track("osm_get_security_metrics")
 @_conditionally_register_tool("osm_get_security_metrics")
+@_track("osm_get_security_metrics")
 def get_security_metrics() -> Annotated[
     str,
     Field(
@@ -3884,8 +4031,8 @@ def get_security_metrics() -> Annotated[
     )
 
 
-@_track("osm_get_version")
 @_conditionally_register_tool("osm_get_version")
+@_track("osm_get_version")
 def get_version() -> Annotated[
     str,
     Field(
@@ -3917,8 +4064,8 @@ def get_version() -> Annotated[
     )
 
 
-@_track("osm_get_health")
 @_conditionally_register_tool("osm_get_health")
+@_track("osm_get_health")
 def get_health() -> Annotated[
     str,
     Field(
@@ -3945,8 +4092,8 @@ def get_health() -> Annotated[
     )
 
 
-@_track("osm_get_status")
 @_conditionally_register_tool("osm_get_status")
+@_track("osm_get_status")
 def get_status() -> Annotated[
     str,
     Field(

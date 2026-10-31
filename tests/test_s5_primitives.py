@@ -174,43 +174,84 @@ def test_pygments_and_dead_helpers_removed():
         assert needle not in src, f"dead code ref detected: {needle}"
 
 
-async def test_canonical_tools_all_tracked():
-    """Regression: 4 tools were missing the @_track decorator and
-    therefore did not bump the per-tool call counter. The
-    ``tool_calls`` map in ``osm_get_health`` would be incomplete.
+async def test_registered_default_tools_increment_their_call_counters(monkeypatch):
+    """Invoke each registered default FastMCP callback without upstream I/O."""
+    monkeypatch.setattr(server_mod.Context, "info", lambda *_args, **_kwargs: None)
 
-    We assert statically that the source has @_track directly above
-    every conditional FastMCP registration for the canonical tools.
-    """
-    src = Path(server_mod.__file__).read_text(encoding="utf-8")
-    expected_tracked = [
-        "osm_find_address",
-        "osm_find_nearby_store",
-        "osm_find_place_detailed",
-        "osm_find_place",
-        "osm_geocode",
-        "osm_navigate",
-        "osm_directions",
-        "osm_find_nearby",
-        "osm_find_nearby_detailed",
-        "osm_find_other",
-        "osm_get_security_metrics",
-        "osm_get_version",
-        "osm_get_health",
-        "osm_get_status",
-    ]
-    for tool_name in expected_tracked:
-        # Match `@_track("<name>")` immediately above the conditional
-        # FastMCP registration for that handler.
-        # We use a non-greedy .+? with DOTALL to span the gap between them.
-        pattern = (
-            r'@_track\(["\']' + re.escape(tool_name) + r'["\']\)\s*\n\s*@_conditionally_register_tool\(["\']'
-            + re.escape(tool_name) + r'["\']'
-        )
-        assert re.search(pattern, src), (
-            f"{tool_name} missing @_track decorator — tool call counter "
-            "won't be bumped."
-        )
+    async def fake_search_category_near_place(**_kwargs):
+        return '{"status":"ok"}'
+
+    async def fake_find_specific_place_impl(*_args, **_kwargs):
+        return '{"status":"ok"}'
+
+    async def fake_nominatim_reverse(_self, *_args, **_kwargs):
+        return None
+
+    async def fake_nominatim_search(_self, *_args, **_kwargs):
+        return []
+
+    async def fake_directions(_self, *_args, **_kwargs):
+        return '{"status":"ok"}'
+
+    monkeypatch.setattr(server_mod, "search_category_near_place", fake_search_category_near_place)
+    monkeypatch.setattr(server_mod, "find_specific_place_impl", fake_find_specific_place_impl)
+    monkeypatch.setattr(server_mod.OsmSearcher, "nominatim_reverse", fake_nominatim_reverse)
+    monkeypatch.setattr(server_mod.OsmSearcher, "nominatim_search", fake_nominatim_search)
+    monkeypatch.setattr(server_mod.OsmNavigator, "directions", fake_directions)
+
+    calls = {
+        "osm_find_nearby": {"place": "Fixtureville", "category": "food"},
+        "osm_find_place": {"address_or_place": "Fixtureville"},
+        "osm_find_address": {"latitude": 1.0, "longitude": 2.0},
+        "osm_geocode": {"place": "Fixtureville"},
+        "osm_directions": {
+            "start_address_or_place": "Fixtureville A",
+            "destination_address_or_place": "Fixtureville B",
+        },
+        "osm_get_health": {},
+        "osm_get_security_metrics": {},
+        "osm_get_version": {},
+    }
+    assert {tool.name for tool in await mcp.list_tools()} == set(calls)
+
+    server_mod.reset_operational_metrics_for_tests()
+    for tool_name, arguments in calls.items():
+        await mcp.call_tool(tool_name, arguments)
+
+    snapshot = server_mod.get_operational_snapshot()
+    assert snapshot["tool_calls"] == {tool_name: 1 for tool_name in calls}
+    assert snapshot["tool_errors"] == {}
+    server_mod.reset_operational_metrics_for_tests()
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "arguments"),
+    [
+        ("osm_get_version", {}),
+        ("osm_find_place", {"address_or_place": "Fixtureville"}),
+    ],
+)
+async def test_registered_fastmcp_handler_counts_propagated_error_once(
+    monkeypatch, tool_name, arguments
+):
+    monkeypatch.setattr(server_mod.Context, "info", lambda *_args, **_kwargs: None)
+
+    def fail(*_args, **_kwargs):
+        raise RuntimeError("injected test failure")
+
+    if tool_name == "osm_get_version":
+        monkeypatch.setattr(server_mod, "build_tool_response", fail)
+    else:
+        monkeypatch.setattr(server_mod, "find_specific_place_impl", fail)
+    server_mod.reset_operational_metrics_for_tests()
+
+    with pytest.raises(Exception, match="injected test failure"):
+        await mcp.call_tool(tool_name, arguments)
+
+    snapshot = server_mod.get_operational_snapshot()
+    assert snapshot["tool_calls"] == {tool_name: 1}
+    assert snapshot["tool_errors"] == {tool_name: 1}
+    server_mod.reset_operational_metrics_for_tests()
 
 
 async def test_validate_upstreams_lock_exists():
@@ -312,8 +353,8 @@ async def fake_search_category_near_place(*, place, category, **kwargs):
 server_mod.search_category_near_place = fake_search_category_near_place
 server_mod.reset_operational_metrics_for_tests()
 async def main():
-    await server_mod.mcp._tool_manager._tools["osm_find_pharmacy"].fn(place="Fixtureville")
-    await server_mod.mcp._tool_manager._tools["osm_find_bakeries"].fn(place="Fixtureville")
+    await server_mod.mcp.call_tool("osm_find_pharmacy", {"place": "Fixtureville"})
+    await server_mod.mcp.call_tool("osm_find_bakeries", {"place": "Fixtureville"})
     print(json.dumps({"categories": categories, "calls": server_mod.get_operational_snapshot()["tool_calls"]}))
 asyncio.run(main())
 '''

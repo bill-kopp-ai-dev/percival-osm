@@ -189,6 +189,7 @@ OSM_EXPOSE_LEGACY_ALIASES=true          # additional gate for category aliases
 OSM_NOMINATIM_RATE_LIMIT_RPS=1.0        # respect Nominatim usage policy
 OSM_NOMINATIM_RATE_LIMIT_BURST=2        # small burst above the average
 OSM_RESPONSE_MODE=compact               # compact | detailed
+OSM_UPSTREAM_TOOL_DEADLINE_SECONDS=16    # end-to-end upstream tool limit (max 16)
 
 # Nominatim usage policy — both must be non-empty
 USER_AGENT=percival-osm/0.4.1 (you@example.com)
@@ -198,7 +199,7 @@ FROM_HEADER=you@example.com
 # those tools return provider_not_configured. Haversine is only used to choose
 # the routing profile when ORS is configured.)
 ORS_API_KEY=...
-ORS_REQUEST_TIMEOUT=90                  # default 90s (lib default is 60s)
+ORS_REQUEST_TIMEOUT=90                  # per-request setting; tool deadline below is the overall cap
 
 # Logging (stderr only — stdout is reserved for MCP JSON-RPC)
 OSM_LOG_FORMAT=plain                    # plain | json

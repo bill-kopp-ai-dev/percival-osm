@@ -5,8 +5,8 @@
 #
 # Runs local, no-upstream-call checks against a freshly built image:
 #
-#   1. The shared CI conformance probe completes initialize/tools/list without
-#      closing stdin before the server has returned its protocol responses.
+#   1. The shared CI conformance probe completes initialize/tools/list, then
+#      calls version and health to verify per-tool metrics in the same session.
 #   2. The container's non-root user is in effect.
 #   3. The required env-var guard rejects a misconfigured container
 #      with a clear error and a non-zero exit code.

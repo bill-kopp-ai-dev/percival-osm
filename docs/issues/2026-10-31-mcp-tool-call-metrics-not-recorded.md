@@ -1,6 +1,6 @@
 # Issue: chamadas MCP não aparecem nas métricas operacionais
 
-- **Status:** aberta
+- **Status:** corrigida e validada; candidata combinada pinada no runtime MCP
 - **Prioridade sugerida:** P2 — observabilidade operacional
 - **Identificada em:** 2026-10-31, validação pós-deploy da superfície reduzida de tools
 
@@ -20,9 +20,9 @@ parecer indisponível.
 - O health ainda retornou uptime válido e `last_upstream_failure: null`; a falha
   posterior de `osm_find_nearby` no teste ocorreu depois desse snapshot.
 
-## Causa provável confirmada no código
+## Causa confirmada no código antes da correção
 
-Handlers canônicos usam decorators nesta ordem:
+Antes da correção, os handlers canônicos usavam decorators nesta ordem:
 
 ```python
 @_track("osm_get_version")
@@ -59,6 +59,28 @@ usada nos demais handlers canônicos expostos.
 
 ## Próximo passo
 
-Corrigir a ordem/composição dos decorators para que o callback entregue ao
-FastMCP seja o wrapper instrumentado, adicionar a regressão de execução real e
-validar a imagem candidata antes de atualizar o pin Percival.
+Após revisão/commit das alterações, construir uma imagem com revisão OCI
+rastreável e, com autorização explícita para a mudança de deploy, atualizar o
+pin Percival. A imagem local de validação desta execução foi construída a partir
+de worktree ainda não commitado e está marcada `revision=unknown`; não deve ser
+tratada como artefato de release.
+
+## Resultado da correção — 2026-10-31
+
+- Os callbacks canônicos agora são instrumentados antes de serem entregues ao
+  gerenciador FastMCP. A camada de tracking incrementa erro sem incrementar
+  novamente a chamada; aliases usam o mesmo wrapper sob o nome do alias.
+- A regressão textual foi substituída por execução dos oito callbacks padrão
+  através de `FastMCP.call_tool`, com dependências upstream controladas. Testes
+  confirmam uma chamada por tool, exceções síncronas/assíncronas com uma chamada
+  e um erro, contagem somente no alias chamado e superfície padrão inalterada.
+- Verificação automatizada: `93 passed`.
+- Imagem local `percival-osm:metrics-fix-local`, ID
+  `sha256:a033fc6f957319413a80886bdd4971804e4465bcd614d6235bdc3bebee877764`.
+  A sessão stdio real executou initialize, `tools/list`, `osm_get_version` e
+  `osm_get_health`; o health contou version e health uma vez cada. O smoke test
+  Docker completo também passou, incluindo HTTP.
+- A candidata combinada de deadline/metrics foi pinada por Bill no runtime MCP
+  como `sha256:67cbd63c83a231e5a98cb9a12ae28de115a8685dc906ba2d9eb320270d2ae5ff`.
+  O reteste real confirmou `tool_calls` para a busca e health após o pin. OCI
+  revision permanece `unknown` por ter sido construída de worktree não commitado.

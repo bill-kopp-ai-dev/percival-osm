@@ -3,7 +3,9 @@
 import asyncio
 import json
 import os
+import time
 
+import httpx
 import pytest
 
 from percival_osm_mcp import server as server_mod
@@ -35,6 +37,198 @@ def _base_settings(**overrides):
     }
     values.update(overrides)
     return Settings(**values)
+
+
+def test_upstream_tool_deadline_setting_stays_within_observed_client_budget() -> None:
+    assert _base_settings().upstream_tool_deadline_seconds == 16.0
+    assert _base_settings(upstream_tool_deadline_seconds=5).upstream_tool_deadline_seconds == 5
+    with pytest.raises(ValueError):
+        _base_settings(upstream_tool_deadline_seconds=0)
+    with pytest.raises(ValueError):
+        _base_settings(upstream_tool_deadline_seconds=17)
+
+
+@pytest.mark.parametrize(
+    ("handler", "tool_name"),
+    [
+        (server_mod.find_places_near_place, "osm_find_nearby"),
+        (server_mod.find_places_near_place_detailed, "osm_find_nearby_detailed"),
+    ],
+)
+async def test_nearby_deadline_returns_controlled_error_and_cancels(
+    monkeypatch, handler, tool_name
+) -> None:
+    cancelled = asyncio.Event()
+    settings = _base_settings(upstream_tool_deadline_seconds=0.02)
+    searcher = OsmSearcher(settings, user_valves=None)
+
+    class FakeClient:
+        closed = False
+
+        async def aclose(self):
+            self.closed = True
+
+    client = FakeClient()
+    searcher._http_client = client
+
+    async def delayed_search(*args, **kwargs):
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    monkeypatch.setattr(server_mod, "valves", settings)
+    monkeypatch.setattr(server_mod, "user_valves", None)
+    monkeypatch.setattr(server_mod, "OsmSearcher", lambda *args, **kwargs: searcher)
+    monkeypatch.setattr(searcher, "search_nearby", delayed_search)
+    reset_operational_metrics_for_tests()
+
+    started = time.monotonic()
+    response = await handler("Fixtureville", "groceries", limit=3, radius=1000)
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 0.5
+    assert cancelled.is_set()
+    assert client.closed
+    assert searcher._http_client is None
+    assert json.loads(response)["status"] == "upstream_error"
+    snapshot = get_operational_snapshot()
+    assert snapshot["tool_calls"][tool_name] == 1
+    assert tool_name not in snapshot["tool_errors"]
+    assert snapshot["last_upstream_failure"]["kind"] == "NearbySearch"
+    assert "deadline exceeded" in snapshot["last_upstream_failure"]["message"]
+
+
+async def test_registered_nearby_timeout_reaches_mcp_caller(monkeypatch) -> None:
+    settings = _base_settings(upstream_tool_deadline_seconds=0.02)
+    overpass_cancelled = asyncio.Event()
+    close_cancelled = asyncio.Event()
+
+    class FakeClient:
+        closed = False
+
+        async def get(self, url, params=None, headers=None):
+            url = str(url)
+            if "nominatim.openstreetmap.org/search" in url:
+                return httpx.Response(
+                    200,
+                    json=[{
+                        "lat": "-23.5614",
+                        "lon": "-46.6559",
+                        "display_name": "MASP, São Paulo, Brazil",
+                        "boundingbox": ["-23.57", "-23.55", "-46.67", "-46.64"],
+                    }],
+                    request=httpx.Request("GET", url),
+                )
+            try:
+                await asyncio.Event().wait()
+            finally:
+                overpass_cancelled.set()
+
+        async def aclose(self):
+            try:
+                await asyncio.Event().wait()
+            finally:
+                close_cancelled.set()
+
+    monkeypatch.setattr(server_mod, "valves", settings)
+    monkeypatch.setattr(server_mod, "user_valves", None)
+    monkeypatch.setattr(server_mod, "CANCELLATION_CLEANUP_TIMEOUT_SECONDS", 0.01)
+
+    async def get_client(searcher):
+        if searcher._http_client is None:
+            searcher._http_client = FakeClient()
+        return searcher._http_client
+
+    monkeypatch.setattr(OsmSearcher, "_get_http_client", get_client)
+    reset_operational_metrics_for_tests()
+
+    started = time.monotonic()
+    result = await server_mod.mcp.call_tool(
+        "osm_find_nearby",
+        {
+            "place": "MASP, São Paulo, Brazil",
+            "category": "tourist_attractions",
+            "limit": 3,
+            "radius": 1000,
+        },
+    )
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 0.5
+    assert overpass_cancelled.is_set()
+    assert close_cancelled.is_set()
+    content, structured = result
+    payload = json.loads(structured["result"])
+    assert payload["status"] == "upstream_error"
+    assert "exceeded its execution deadline" in payload["message"]
+    assert json.loads(content[0].text) == payload
+    snapshot = get_operational_snapshot()
+    assert snapshot["tool_calls"]["osm_find_nearby"] == 1
+    assert snapshot["last_upstream_failure"]["kind"] == "NearbySearch"
+
+
+async def test_other_upstream_tool_deadline_returns_controlled_error(monkeypatch) -> None:
+    settings = _base_settings(upstream_tool_deadline_seconds=0.02)
+    searcher = OsmSearcher(settings, user_valves=None)
+    cancelled = asyncio.Event()
+
+    class FakeClient:
+        closed = False
+
+        async def aclose(self):
+            self.closed = True
+
+    client = FakeClient()
+    searcher._http_client = client
+
+    async def delayed_lookup(*args, **kwargs):
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    monkeypatch.setattr(server_mod, "valves", settings)
+    monkeypatch.setattr(server_mod, "user_valves", None)
+    monkeypatch.setattr(server_mod, "OsmSearcher", lambda *args, **kwargs: searcher)
+    monkeypatch.setattr(searcher, "nominatim_search", delayed_lookup)
+    reset_operational_metrics_for_tests()
+
+    response = await server_mod.geocode_place("Fixtureville")
+
+    assert cancelled.is_set()
+    assert client.closed
+    assert json.loads(response)["status"] == "upstream_error"
+    snapshot = get_operational_snapshot()
+    assert snapshot["tool_calls"]["osm_geocode"] == 1
+    assert "osm_geocode" not in snapshot["tool_errors"]
+    assert snapshot["last_upstream_failure"]["kind"] == "osm_geocode"
+
+
+async def test_overpass_failure_keeps_http_status_in_health(monkeypatch) -> None:
+    searcher = OsmSearcher(_base_settings(), user_valves=None)
+    request = httpx.Request("GET", "https://overpass-api.de/api/interpreter")
+    response = httpx.Response(503, request=request)
+
+    async def fail(*args, **kwargs):
+        raise httpx.HTTPStatusError(
+            "upstream failed", request=request, response=response
+        )
+
+    monkeypatch.setattr(searcher, "_http_get_json", fail)
+    reset_operational_metrics_for_tests()
+    with pytest.raises(UpstreamRequestError):
+        await searcher.overpass_search(
+            "Fixtureville",
+            ["amenity=restaurant"],
+            {"minlat": 39.0, "maxlat": 41.0, "minlon": -71.0, "maxlon": -69.0},
+        )
+
+    failure = get_operational_snapshot()["last_upstream_failure"]
+    assert failure["kind"] == "Overpass"
+    assert failure["message"] == "HTTP 503"
+    assert "overpass-api.de" not in failure["message"]
+    await searcher.aclose()
 
 
 async def test_geocode_returns_coordinates(monkeypatch) -> None:
@@ -314,6 +508,25 @@ async def test_searcher_shutdown_drains_then_cancels_orphaned_distance_task(monk
     await asyncio.sleep(0)
     await searcher.aclose()
 
+    assert caller.cancelled()
+    assert not searcher._distance_tasks
+    assert not searcher._distance_futures
+
+
+async def test_searcher_close_cancels_distance_tasks_immediately(monkeypatch) -> None:
+    settings = _base_settings(cache_file="/tmp/osm-test-immediate-shutdown.json")
+    searcher = OsmSearcher(settings, user_valves=None)
+
+    async def never_finishes(*args, **kwargs):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(searcher, "calculate_navigation_distance", never_finishes)
+    caller = asyncio.create_task(searcher._resolve_distance("fixture-key", {}, {}))
+    await asyncio.sleep(0)
+    await searcher.aclose(cancel_pending=True)
+
+    with pytest.raises(asyncio.CancelledError):
+        await caller
     assert caller.cancelled()
     assert not searcher._distance_tasks
     assert not searcher._distance_futures
