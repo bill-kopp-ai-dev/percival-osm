@@ -52,7 +52,7 @@ controle do operador.
 
 ## Methods and resources
 
-- Stack: Python ≥ 3.11, `mcp[cli]`, `httpx`, `openrouteservice`,
+- Stack: Python ≥ 3.11, `mcp[cli]`, `httpx` (incl. ORS via async HTTP),
   `pydantic-settings`, `starlette`, `uvicorn` (ver `pyproject.toml`).
 - Build backend: `hatchling`; pacote `src/percival_osm_mcp`; entry point
   `percival-osm-mcp`.

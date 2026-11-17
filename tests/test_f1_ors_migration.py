@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import json
 from urllib.parse import urlsplit
 
+import httpx
 import pytest
 
+from percival_osm_mcp import server as server_mod
 from percival_osm_mcp.server import OrsRouter, Settings, chunk_list
 
 
@@ -22,36 +25,33 @@ def _settings(tmp_path, **overrides) -> Settings:
     return Settings(**values)
 
 
-def test_ors_directions_uses_heigit_prefix_json_and_lon_lat(tmp_path) -> None:
+@pytest.mark.asyncio
+async def test_ors_directions_uses_heigit_prefix_json_and_lon_lat(tmp_path, monkeypatch) -> None:
     captured: dict[str, object] = {}
+    original_client = httpx.AsyncClient
 
-    class Response:
-        status_code = 200
-        request = None
+    async def handler(request):
+        captured["url"] = str(request.url)
+        captured["headers"] = request.headers
+        captured["json"] = json.loads(await request.aread())
+        return httpx.Response(
+            200,
+            json={"routes": [{"summary": {"distance": 2.3, "duration": 300}, "segments": []}]},
+            request=request,
+        )
 
-        def json(self):
-            return {
-                "routes": [
-                    {"summary": {"distance": 2.3, "duration": 300}, "segments": []}
-                ]
-            }
+    def client_factory(*args, **kwargs):
+        return original_client(*args, transport=httpx.MockTransport(handler), **kwargs)
 
-    class Session:
-        get = None
-
-        def post(self, url, **kwargs):
-            captured["url"] = url
-            captured.update(kwargs)
-            return Response()
+    monkeypatch.setattr(server_mod.httpx, "AsyncClient", client_factory)
 
     settings = _settings(
         tmp_path,
         ors_instance="https://api.heigit.org/openrouteservice///",
     )
     router = OrsRouter(settings, user_valves=None)
-    router._client._session = Session()
 
-    route = router.calculate_route(
+    route = await router.calculate_route_async(
         {"lat": 52.0, "lon": 13.0},
         {"lat": 52.001, "lon": 13.002},
     )
@@ -64,8 +64,8 @@ def test_ors_directions_uses_heigit_prefix_json_and_lon_lat(tmp_path) -> None:
         "/openrouteservice/v2/directions/foot-walking/json",
     )
     assert parsed_url.query == ""
-    assert captured["json"]["coordinates"] == ((13.0, 52.0), (13.002, 52.001))
-    assert captured["headers"]["Authorization"] == "test-ors-key"
+    assert captured["json"]["coordinates"] == [[13.0, 52.0], [13.002, 52.001]]
+    assert captured["headers"]["authorization"] == "test-ors-key"
 
 
 def test_ors_instance_override_remains_subject_to_allowlist(tmp_path) -> None:
@@ -81,7 +81,7 @@ def test_ors_instance_override_remains_subject_to_allowlist(tmp_path) -> None:
 def test_ors_default_base_uses_heigit_service_prefix(tmp_path) -> None:
     router = OrsRouter(_settings(tmp_path, ors_instance=None), user_valves=None)
 
-    assert router._client._base_url == "https://api.heigit.org/openrouteservice"
+    assert router._base_url == "https://api.heigit.org/openrouteservice"
 
 
 def test_legacy_ors_url_environment_alias_is_preserved(monkeypatch) -> None:

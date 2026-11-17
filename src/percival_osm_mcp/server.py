@@ -2,6 +2,7 @@ from mcp.server.fastmcp import FastMCP, Context
 import argparse
 import sys
 import asyncio
+import contextvars
 import html
 import hmac
 import logging
@@ -25,8 +26,6 @@ import json
 import math
 import httpx
 
-import openrouteservice
-from openrouteservice.directions import directions as ors_directions
 from starlette.applications import Starlette
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
@@ -303,7 +302,7 @@ def _configure_logging() -> None:
 
     # Quiet down noisy third-party loggers unless explicitly debugging.
     if level > logging.DEBUG:
-        for noisy in ("httpx", "httpcore", "openrouteservice"):
+        for noisy in ("httpx", "httpcore"):
             logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
@@ -315,7 +314,10 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8080
 DEFAULT_AUTH_TOKEN_ENV_VAR = "MCP_OSM_AUTH_TOKEN"
 SHUTDOWN_DRAIN_TIMEOUT_SECONDS = 25
-CANCELLATION_CLEANUP_TIMEOUT_SECONDS = 2.0
+CANCELLATION_CLEANUP_TIMEOUT_SECONDS = 0.1
+_CALL_CLEANUP_BUDGET = contextvars.ContextVar(
+    "osm_call_cleanup_budget", default=CANCELLATION_CLEANUP_TIMEOUT_SECONDS
+)
 
 # Initialize FastMCP server
 mcp = FastMCP(
@@ -1589,7 +1591,7 @@ class AsyncTokenBucket:
                     await asyncio.wait_for(
                         self._cv.wait(), timeout=max(wait, 0.001)
                     )
-                except (asyncio.TimeoutError, asyncio.CancelledError):
+                except asyncio.TimeoutError:
                     # Re-evaluate after the wake-up interval; another consumer
                     # may have taken the token, or enough time elapsed for refill.
                     pass
@@ -1617,7 +1619,7 @@ class OsmCache:
         self.default_ttl_seconds = max(int(default_ttl_seconds), 1)
         identity = {
             "nominatim": settings.nominatim_url,
-            "overpass": settings.overpass_url,
+            "overpass": settings.overpass_turbo_url,
             "ors": settings.ors_instance,
             "format": "json-v1",
         }
@@ -1700,7 +1702,7 @@ class OsmCache:
                 pass
             with open(tmp_path, "x", encoding="utf-8") as f:
                 os.chmod(tmp_path, 0o600)
-                json.dump({"entries": self.data}, f)
+                json.dump(self.data, f)
                 f.flush()
                 os.fsync(f.fileno())
             os.replace(tmp_path, path)
@@ -1773,83 +1775,74 @@ class OrsRouter:
         ors_instance = (self.valves.ors_instance or "").strip()
         ors_instance = ors_instance or "https://api.heigit.org/openrouteservice"
         ors_instance = ors_instance.rstrip("/")
+        self._base_url = ors_instance
         validate_upstream_url_policy(ors_instance, settings=self.valves, label="ors_instance")
 
-        if ors_api_key:
-            self._client = openrouteservice.Client(
-                base_url=ors_instance,
-                key=ors_api_key,
-                timeout=self.valves.ors_request_timeout,
-            )
-        else:
-            # ORS calls generally need an API key; keep None to preserve previous behavior.
-            self._client = None
+    async def calculate_distance_async(self, from_thing: dict, to_thing: dict) -> Optional[float]:
+        route = await self.calculate_route_async(from_thing, to_thing)
+        return route.get("summary", {}).get("distance") if route else None
 
-    def calculate_route(self, from_thing: dict, to_thing: dict) -> Optional[dict]:
-        """
-        Calculate route between A and B. Returns the route,
-        if successful, or None if the distance could not be
-        calculated, or if ORS is not configured.
-        """
-        if not self._client:
+    async def calculate_route_async(self, from_thing: dict, to_thing: dict) -> Optional[dict]:
+        """Request ORS without a worker thread so cancellation stops the HTTP exchange."""
+        api_key = (self.valves.ors_api_key or "").strip()
+        if not api_key:
             return None
 
-        # select profile based on the haversine distance between
-        # the two endpoints. ``to_thing`` comes from a Nominatim
-        # search result and therefore does not carry a ``distance``
-        # field, so we must compute it ourselves. very close
-        # haversine distances use the walking profile (which also
-        # covers biking for short hops). further away = use car.
         try:
             distance_km = haversine_distance(from_thing, to_thing)
         except (KeyError, TypeError, ValueError):
             distance_km = 9000
-
-        if not self.valves.car_only and distance_km <= 1.5:
-            profile = "foot-walking"
-        else:
-            profile = "driving-car"
-
-        coords = (
-            (from_thing["lon"], from_thing["lat"]),
-            (to_thing["lon"], to_thing["lat"]),
-        )
-
-        # check cache first.
-        cache_key = _stable_cache_key(
-            "ors_route",
-            {"coords": coords, "profile": profile},
-        )
+        profile = "foot-walking" if not self.valves.car_only and distance_km <= 1.5 else "driving-car"
+        coordinates = [
+            [from_thing["lon"], from_thing["lat"]],
+            [to_thing["lon"], to_thing["lat"]],
+        ]
+        cache_key = _stable_cache_key("ors_route", {"coords": coordinates, "profile": profile})
         cached_route = self.cache.get(cache_key)
         if cached_route:
-            logger.debug("Got route from cache")
             return cached_route
 
-        resp = ors_directions(
-            self._client, coords, profile=profile, preference="fastest", units="km"
+        url = f"{self._base_url}/v2/directions/{profile}/json"
+        validate_upstream_url_policy(url, settings=self.valves, label="upstream_request_url")
+        timeout_seconds = min(
+            float(self.valves.ors_request_timeout),
+            float(self.valves.upstream_tool_deadline_seconds),
         )
-
-        routes = resp.get("routes", [])
-        if len(routes) > 0:
-            self.cache.set(cache_key, routes[0])
-            return routes[0]
-        else:
+        timeout = httpx.Timeout(timeout_seconds)
+        try:
+            async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+                async with client.stream(
+                    "POST",
+                    url,
+                    json={"coordinates": coordinates, "preference": "fastest", "units": "km"},
+                    headers={"Authorization": api_key, "Content-Type": "application/json"},
+                ) as response:
+                    max_bytes = max(1024, int(self.valves.http_max_response_bytes))
+                    body = bytearray()
+                    async for chunk in response.aiter_bytes():
+                        if len(body) + len(chunk) > max_bytes:
+                            record_security_event("upstream_response_blocked", reason="body_size_exceeded", url=url)
+                            raise UpstreamRequestError("ORS response exceeds configured size limit")
+                        body.extend(chunk)
+                    if response.status_code in {401, 403, 429} or response.status_code >= 500:
+                        raise UpstreamRequestError(f"ORS returned HTTP {response.status_code}")
+                    response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            raise UpstreamRequestError(
+                f"ORS returned HTTP {exc.response.status_code}"
+            ) from exc
+        except httpx.RequestError as exc:
+            raise UpstreamRequestError(f"ORS transport failed: {type(exc).__name__}") from exc
+        try:
+            payload = json.loads(body)
+        except (json.JSONDecodeError, UnicodeError) as exc:
+            raise UpstreamRequestError("ORS returned invalid JSON") from exc
+        routes = payload.get("routes", []) if isinstance(payload, dict) else []
+        if not routes:
             return None
-
-    def calculate_distance(self, from_thing: dict, to_thing: dict) -> Optional[float]:
-        """
-        Calculate navigation distance between A and B. Returns the
-        distance calculated, if successful, or None if the distance
-        could not be calculated, or if ORS is not configured.
-        """
-        if not self._client:
-            return None
-
-        route = self.calculate_route(from_thing, to_thing)
-        return route.get("summary", {}).get("distance", None) if route else None
-
-    async def calculate_distance_async(self, from_thing: dict, to_thing: dict) -> Optional[float]:
-        return await asyncio.to_thread(self.calculate_distance, from_thing, to_thing)
+        route = routes[0]
+        self.cache.set(cache_key, route)
+        return route
 
 
 class OsmSearcher:
@@ -1928,18 +1921,24 @@ class OsmSearcher:
         return self._http_client
 
     async def aclose(self, *, cancel_pending: bool = False) -> None:
+        cleanup_budget = min(
+            CANCELLATION_CLEANUP_TIMEOUT_SECONDS,
+            max(0.001, _CALL_CLEANUP_BUDGET.get()),
+        )
+        cleanup_deadline = time.monotonic() + cleanup_budget
         current_task = asyncio.current_task()
         cancel_pending = cancel_pending or bool(
             current_task is not None and current_task.cancelling()
         )
         tasks = tuple(self._distance_tasks)
         if tasks:
-            if cancel_pending:
-                pending = tasks
-            else:
-                _, pending = await asyncio.wait(
-                    tasks, timeout=SHUTDOWN_DRAIN_TIMEOUT_SECONDS
-                )
+            _, pending = await asyncio.wait(
+                tasks,
+                timeout=min(
+                    SHUTDOWN_DRAIN_TIMEOUT_SECONDS,
+                    max(0.0, cleanup_deadline - time.monotonic()),
+                ),
+            )
             for task in pending:
                 task.cancel()
             if pending:
@@ -1947,7 +1946,7 @@ class OsmSearcher:
                     if not future.done():
                         future.cancel()
                 done, still_pending = await asyncio.wait(
-                    pending, timeout=CANCELLATION_CLEANUP_TIMEOUT_SECONDS
+                    pending, timeout=max(0.0, cleanup_deadline - time.monotonic())
                 )
                 if done:
                     await asyncio.gather(*done, return_exceptions=True)
@@ -1957,17 +1956,21 @@ class OsmSearcher:
                         len(still_pending),
                         CANCELLATION_CLEANUP_TIMEOUT_SECONDS,
                     )
-                async with self._distance_futures_lock:
-                    self._distance_futures = {
-                        key: future
-                        for key, future in self._distance_futures.items()
-                        if not future.cancelled()
-                    }
+                try:
+                    async with asyncio.timeout(max(0.001, cleanup_deadline - time.monotonic())):
+                        async with self._distance_futures_lock:
+                            self._distance_futures = {
+                                key: future
+                                for key, future in self._distance_futures.items()
+                                if not future.cancelled()
+                            }
+                except TimeoutError:
+                    logger.warning("Distance task registry cleanup exceeded its budget")
         if self._http_client is not None:
             client = self._http_client
             if cancel_pending:
                 try:
-                    async with asyncio.timeout(CANCELLATION_CLEANUP_TIMEOUT_SECONDS):
+                    async with asyncio.timeout(max(0.001, cleanup_deadline - time.monotonic())):
                         await client.aclose()
                 except TimeoutError:
                     logger.warning(
@@ -1977,8 +1980,16 @@ class OsmSearcher:
                 finally:
                     self._http_client = None
             else:
-                await client.aclose()
-                self._http_client = None
+                try:
+                    async with asyncio.timeout(max(0.001, cleanup_deadline - time.monotonic())):
+                        await client.aclose()
+                except TimeoutError:
+                    logger.warning(
+                        "HTTP client did not close within %.1fs",
+                        CANCELLATION_CLEANUP_TIMEOUT_SECONDS,
+                    )
+                finally:
+                    self._http_client = None
 
     def _rate_limiter_for(self, url: str) -> Optional[AsyncTokenBucket]:
         """Return the appropriate rate limiter for a given upstream URL."""
@@ -2015,60 +2026,54 @@ class OsmSearcher:
                     current_url = url
                     current_params = params
                     for _ in range(6):
-                        response = await client.get(
-                            current_url, params=current_params, headers=headers
-                        )
-                        if response.status_code not in {301, 302, 303, 307, 308}:
-                            break
-                        if not self.valves.http_follow_redirects:
-                            break
-                        location = response.headers.get("location")
-                        if not location:
-                            break
-                        next_url = urljoin(str(response.url), location)
-                        validate_upstream_url_policy(
-                            next_url,
-                            settings=self.valves,
-                            label="upstream_redirect_url",
-                        )
-                        current_url = next_url
-                        current_params = {}
+                        async with client.stream(
+                            "GET", current_url, params=current_params, headers=headers
+                        ) as response:
+                            if response.status_code in {301, 302, 303, 307, 308} and self.valves.http_follow_redirects:
+                                location = response.headers.get("location")
+                                if location:
+                                    next_url = urljoin(str(response.url), location)
+                                    validate_upstream_url_policy(
+                                        next_url,
+                                        settings=self.valves,
+                                        label="upstream_redirect_url",
+                                    )
+                                    current_url = next_url
+                                    current_params = {}
+                                    continue
+
+                            validate_upstream_url_policy(
+                                str(response.url),
+                                settings=self.valves,
+                                label="upstream_redirect_url",
+                            )
+                            header_content_length = response.headers.get("content-length")
+                            if header_content_length and header_content_length.isdigit():
+                                if int(header_content_length) > max_response_bytes:
+                                    record_security_event(
+                                        "upstream_response_blocked",
+                                        reason="content_length_exceeded",
+                                        url=url,
+                                    )
+                                    raise ValueError(
+                                        "Upstream response exceeds OSM_HTTP_MAX_RESPONSE_BYTES."
+                                    )
+                            body = bytearray()
+                            async for chunk in response.aiter_bytes():
+                                if len(body) + len(chunk) > max_response_bytes:
+                                    record_security_event(
+                                        "upstream_response_blocked",
+                                        reason="body_size_exceeded",
+                                        url=url,
+                                    )
+                                    raise ValueError(
+                                        "Upstream response exceeds OSM_HTTP_MAX_RESPONSE_BYTES."
+                                    )
+                                body.extend(chunk)
+                            response.raise_for_status()
+                            return json.loads(body)
                     else:
                         raise ValueError("Upstream redirect limit exceeded.")
-
-                validate_upstream_url_policy(
-                    str(response.url),
-                    settings=self.valves,
-                    label="upstream_redirect_url",
-                )
-
-                header_content_length = response.headers.get("content-length")
-                if header_content_length:
-                    try:
-                        if int(header_content_length) > max_response_bytes:
-                            record_security_event(
-                                "upstream_response_blocked",
-                                reason="content_length_exceeded",
-                                url=url,
-                            )
-                            raise ValueError(
-                                "Upstream response exceeds OSM_HTTP_MAX_RESPONSE_BYTES."
-                            )
-                    except ValueError:
-                        if header_content_length.isdigit():
-                            raise
-
-                body = response.content
-                if len(body) > max_response_bytes:
-                    record_security_event(
-                        "upstream_response_blocked",
-                        reason="body_size_exceeded",
-                        url=url,
-                    )
-                    raise ValueError("Upstream response exceeds OSM_HTTP_MAX_RESPONSE_BYTES.")
-
-                response.raise_for_status()
-                return response.json()
             except (httpx.HTTPStatusError, httpx.RequestError) as exc:
                 last_exception = exc
                 record_security_event(
@@ -3242,7 +3247,7 @@ class OsmNavigator:
                 )
 
             start, destination = start[0], destination[0]
-            route = await asyncio.to_thread(router.calculate_route, start, destination)
+            route = await router.calculate_route_async(start, destination)
 
             if not route:
                 await self.event_navigating(done=True)
@@ -3370,7 +3375,7 @@ class OsmNavigator:
                 )
 
             start, destination = start[0], destination[0]
-            route = await asyncio.to_thread(router.calculate_route, start, destination)
+            route = await router.calculate_route_async(start, destination)
 
             if not route:
                 await self.event_navigating(done=True)
@@ -3480,7 +3485,13 @@ def _track(tool_name: str):
             try:
                 if tool_name in upstream_tool_names:
                     timeout_seconds = float(valves.upstream_tool_deadline_seconds)
-                    deadline = asyncio.timeout(timeout_seconds)
+                    cleanup_budget = min(
+                        CANCELLATION_CLEANUP_TIMEOUT_SECONDS,
+                        max(0.001, timeout_seconds * 0.1),
+                    )
+                    execution_budget = max(0.001, timeout_seconds - cleanup_budget)
+                    cleanup_token = _CALL_CLEANUP_BUDGET.set(cleanup_budget)
+                    deadline = asyncio.timeout(execution_budget)
                     try:
                         async with deadline:
                             return await fn(*args, **kwargs)
@@ -3501,6 +3512,8 @@ def _track(tool_name: str):
                             message="An upstream request exceeded its execution deadline; retry later.",
                             query={},
                         )
+                    finally:
+                        _CALL_CLEANUP_BUDGET.reset(cleanup_token)
                 return await fn(*args, **kwargs)
             except Exception:
                 record_tool_error(tool_name)

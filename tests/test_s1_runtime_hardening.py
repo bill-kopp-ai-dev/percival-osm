@@ -1,5 +1,7 @@
 import os
+import json
 import stat
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import pytest
@@ -15,6 +17,19 @@ from percival_osm_mcp.server import (
     resolve_secure_cache_path,
     validate_upstream_url_policy,
 )
+
+
+@asynccontextmanager
+async def _stream_via_fake_get(client, url, params=None, headers=None):
+    response = await client.get(url, params=params, headers=headers)
+    if not isinstance(response, httpx.Response):
+        body = json.dumps(response.json()).encode()
+
+        async def aiter_bytes():
+            yield body
+
+        response.aiter_bytes = aiter_bytes
+    yield response
 
 
 def _base_settings(**overrides):
@@ -128,6 +143,9 @@ async def test_http_get_json_uses_follow_redirect_setting_and_size_limit(monkeyp
         async def get(self, url, params=None, headers=None):
             return DummyResponse()
 
+        def stream(self, method, url, params=None, headers=None):
+            return _stream_via_fake_get(self, url, params, headers)
+
         async def aclose(self):
             return None
 
@@ -184,6 +202,9 @@ async def test_http_get_json_validates_redirect_chain(monkeypatch) -> None:
             observed_urls.append(url)
             return DummyResponse()
 
+        def stream(self, method, url, params=None, headers=None):
+            return _stream_via_fake_get(self, url, params, headers)
+
         async def aclose(self):
             return None
 
@@ -225,6 +246,9 @@ async def test_http_get_json_does_not_follow_redirect_when_disabled(monkeypatch)
         async def get(self, url, params=None, headers=None):
             observed_urls.append(url)
             return DummyResponse()
+
+        def stream(self, method, url, params=None, headers=None):
+            return _stream_via_fake_get(self, url, params, headers)
 
     async def fake_get_http_client(self):
         return DummyClient()
@@ -276,6 +300,9 @@ async def test_http_get_json_allows_validated_allowlisted_redirect(monkeypatch) 
         async def get(self, url, params=None, headers=None):
             observed_urls.append(url)
             return Redirect() if len(observed_urls) == 1 else Success()
+
+        def stream(self, method, url, params=None, headers=None):
+            return _stream_via_fake_get(self, url, params, headers)
 
     async def fake_get_http_client(self):
         return DummyClient()

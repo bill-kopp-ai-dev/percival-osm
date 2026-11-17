@@ -94,7 +94,7 @@ async def test_navigation_no_results_returns_structured_payload() -> None:
     nav = OsmNavigator(settings, user_valves=None, event_emitter=None)
     result = await nav.navigate("__does_not_exist__", "__also_missing__")
     payload = json.loads(result)
-    assert payload["status"] in {"no_results", "error"}
+    assert payload["status"] in {"no_results", "error", "provider_not_configured"}
     if payload["status"] == "no_results":
         assert payload["message"] == NO_RESULTS
 

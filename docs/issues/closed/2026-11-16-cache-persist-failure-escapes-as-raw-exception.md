@@ -1,6 +1,6 @@
 # Issue: falha de persistência do cache escapa como exceção crua
 
-- **Status:** aberta
+- **Status:** fechada — 2026-11-17
 - **Prioridade sugerida:** P1 — robustez do runtime e prazo de entrega das respostas
 - **Identificada em:** 2026-11-16, auditoria documental sobre o estado real do
   código (sandbox com `/tmp` somente-leitura)
@@ -79,5 +79,19 @@ deadline end-to-end leva o handler a `aclose(cancel_pending=False)`, onde
   `JSONDecodeError`; erros de acesso/encoding e erros de persistência/expiração
   ainda precisam de tratamento. A reprodução registrada foi de escrita EROFS;
   os demais casos serão verificados por fixtures, não são reproduções já feitas.
-- Issue permanece aberta; comportamento recomendado é preservar resultado
-  válido e cache em memória, sem transformar falha de disco em falha upstream.
+- No encaminhamento, recomendou-se preservar resultado válido e manter o cache
+  em memória, sem transformar falha de disco em falha upstream.
+
+## Resolução — 2026-11-17
+
+- F2 adicionou memória compartilhada com persistência best-effort, validação de
+  entradas, escrita atômica e telemetria de degradação; falhas de disco não
+  invalidam o dado em memória.
+- F3 propagou cancelamento, limitou cleanup dentro do orçamento da tool, migrou
+  o caminho ORS de produção para HTTP assíncrono e impôs limite de corpo durante
+  streaming nos provedores.
+- Testes focados F1/F2/F3 e regressões S1/S3/S4/S5 passaram: 84 testes; a suíte
+  completa passou: 124 testes em Python 3.12.12, via `uv` em container com
+  `uv.lock` congelado.
+  Não houve chamada a upstream real.
+- Implementação/decisão: [ADR de transporte assíncrono](../../ADR-2026-11-17-async-upstream-transport.md).

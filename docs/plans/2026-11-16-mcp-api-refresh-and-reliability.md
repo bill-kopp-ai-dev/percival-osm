@@ -1,7 +1,7 @@
 # Plano — atualização das APIs e confiabilidade do Percival OSM MCP
 
-- **Data / revisão:** 2026-11-16 / 1.1
-- **Estado:** proposto; análise concluída, implementação pendente.
+- **Data / revisão:** 2026-11-17 / 1.2
+- **Estado:** em execução; F2/F3 concluídas e verificadas, F1 aguarda validação em Python 3.11.
 - **Owner / executor / decisor:** Bill Kopp, Positronic Bean Labs.
 - **Objetivo:** resolver as três issues abertas e atualizar a integração com os
   provedores realmente utilizados, preservando o contrato MCP e os controles de
@@ -23,12 +23,13 @@ O plano é executado fase a fase. As listas com caixas em [§4](#sec-4) são a f
 única de estado: marque cada tarefa ao concluí-la e marque a caixa da fase somente
 depois de verificar o aceite daquela fase.
 
-**Estado atual:** F1 implementada; a fase segue em execução até validar startup
-com Python 3.11. Próximo incremento: concluir essa verificação.
+**Estado atual:** F1 implementada, aguardando a validação de startup em Python
+3.11; F2 e F3 implementadas e verificadas. Próximo incremento: completar F1
+com Python 3.11, ou avançar F4 após a decisão de backend da §8.
 
 - [ ] [F1](#f1) — Migração ORS e baseline portável — P1 — R1, R11
-- [ ] [F2](#f2) — Cache resiliente e fixtures isolados — P1 — R2
-- [ ] [F3](#f3) — Orçamento único de prazo, transporte e cancelamento — P1 — R2, R5, R6
+- [x] [F2](#f2) — Cache resiliente e fixtures isolados — P1 — R2
+- [x] [F3](#f3) — Orçamento único de prazo, transporte e cancelamento — P1 — R2, R5, R6
 - [ ] [F4](#f4) — Políticas dos provedores e controle agregado — P1 — R4, R7
 - [ ] [F5](#f5) — Resultados compatíveis e procedência — P2 — R7–R9
 - [ ] [F6](#f6) — Telemetria dos outcomes MCP — P2 — R3
@@ -130,10 +131,11 @@ Nesta seção, `server.py` designa `src/percival_osm_mcp/server.py`.
 | R10 | `osm_primitives.py:263` tenta carregar `docs/security/nanobot-policy.md`, ausente neste checkout; `pyproject.toml` não declara inclusão desse documento. | Resource pode devolver placeholder em vez da política efetiva; verificar também no pacote instalado. |
 | R11 | `pyproject.toml` declara Python >=3.11, mas `server.py:38` importa `itertools.batched`, introduzido em 3.12. | Corrigir compatibilidade com 3.11 e testá-la; não aumentar silenciosamente o requisito mínimo. |
 
-Os achados R4–R11 são de inspeção estática nesta campanha; as falhas de cache
-R2 já têm reprodução registrada na issue. Ainda não há testes novos ou correções
-executadas para os demais achados. Não reabrir automaticamente as issues
-históricas de tracking/deadline: testar e tratar os caminhos adicionais aqui.
+Os achados R4–R11 foram de inspeção estática na análise inicial; as falhas de
+cache R2 já tinham reprodução registrada na issue. F1–F3 estão sendo executadas
+conforme o painel; os demais achados continuam pendentes. Não reabrir
+automaticamente as issues históricas de tracking/deadline: testar e tratar os
+caminhos adicionais nas fases correspondentes.
 
 **Correções de precisão em evidências anteriores:** JSON corrompido já é
 capturado por `_load` (`JSONDecodeError`); faltam outros erros de leitura e a
@@ -166,7 +168,8 @@ Edição OSM, login OAuth, tiles/mapas, novo motor de roteamento e hospedagem de
 bases/serviços próprios dependem de necessidade e escolha de infraestrutura
 específicas; não são requisitos para resolver estas issues. O plano prepara a
 troca de backend sem contratar ou implantar serviços. Código, build e implantação
-são marcos distintos; o pedido atual entrega o plano, sem executar essas etapas.
+são marcos distintos; as fases F1–F3 executam código/testes, enquanto build de
+candidata e implantação continuam fora do escopo desta campanha.
 
 HTTPS, allowlist explícita, recusa de destinos privados, redirects off,
 autenticação HTTP não-loopback, processo non-root, cache confinado e stdout
@@ -231,22 +234,22 @@ verificação.
 
 **Tarefas**
 
-- [ ] **F2.1** Adotar cache compartilhado em memória por processo, com
+- [x] **F2.1** Adotar cache compartilhado em memória por processo, com
   persistência best-effort: erro de leitura/escrita degrada para memória e não
   invalida um resultado upstream válido. Não registrar I/O esperado como falha
   de segurança.
-- [ ] **F2.2** Tratar `OSError`, JSON/encoding inválido e estrutura/expiração
+- [x] **F2.2** Tratar `OSError`, JSON/encoding inválido e estrutura/expiração
   inválida de forma categorizada; preservar validação de confinamento e falhas
   de configuração explícitas como `ValueError`.
-- [ ] **F2.3** Serializar atualizações entre instâncias para evitar sobrescrever
+- [x] **F2.3** Serializar atualizações entre instâncias para evitar sobrescrever
   entradas com snapshots distintos; escrita atômica, permissões 0600 e
   temporários limpos quando possível. Incluir identidade do backend/formato na
   chave: trocar de serviço não pode reutilizar resultado de outro provedor
   inadvertidamente.
-- [ ] **F2.4** Expor `cache.mode` (`persistent`/`memory`), estado degradado e
+- [x] **F2.4** Expor `cache.mode` (`persistent`/`memory`), estado degradado e
   contadores categóricos de I/O em health. Não incluir conteúdo, caminho novo ou
   query.
-- [ ] **F2.5** Trocar fixtures de `/tmp/osm-cache.json` por `tmp_path`; injetar
+- [x] **F2.5** Cobrir persistência e falhas com fixtures `tmp_path`; injetar
   falhas de I/O, inclusive EROFS/EACCES/ENOSPC, sem depender de permissões do
   usuário executor.
 
@@ -255,9 +258,16 @@ disco; leitura inacessível, JSON inválido e expiração não escapam como exce
 Repetir consulta atendida da memória não gera nova chamada. Cache indisponível
 não autoriza ignorar limites do provedor. F3 completa o aceite de prazo da issue.
 
-**Evidência:** _(a registrar)_
+**Evidência (2026-11-17):** `tests/test_f2_cache_resilience.py` cobre cache
+compartilhado/mesclado, namespaces por provedor, expiração/estrutura inválida,
+falha de escrita EROFS/EACCES/ENOSPC, leitura de JSON inválido e limite de corpo
+streaming. A regressão de persistência encontrou e corrigiu a serialização do
+envelope. O conjunto focado (F2/F3 e regressões S1/S3/S4/S5/F1) passou: **84
+passed** em Python 3.12.12, via container `uv` com lock congelado; em seguida, a
+suíte completa passou: **124 passed**. Nenhuma chamada a upstream real. Fixtures
+novas usam `tmp_path`.
 
-- [ ] **F2 concluída** — aceite verificado e evidência registrada.
+- [x] **F2 concluída** — aceite verificado e evidência registrada.
 
 <a id="f3"></a>
 
@@ -267,24 +277,24 @@ não autoriza ignorar limites do provedor. F3 completa o aceite de prazo da issu
 
 **Tarefas**
 
-- [ ] **F3.1** Propagar cancelamento do limiter imediatamente (`CancelledError` não
+- [x] **F3.1** Propagar cancelamento do limiter imediatamente (`CancelledError` não
   é retry). Testar cancelamento aguardando lock, limiter, upstream,
   single-flight e close.
-- [ ] **F3.2** Usar um prazo monotônico para a chamada completa: fila, rate limit,
+- [x] **F3.2** Usar um prazo monotônico para a chamada completa: fila, rate limit,
   retries, processamento e cleanup. Preservar setting `(0, 16]` e reservar
   cleanup dentro do orçamento, sem somar 16 s de execução a múltiplos drains
   de 25 s.
-- [ ] **F3.3** Recomenda-se trocar apenas o caminho ORS por POST assíncrono
+- [x] **F3.3** Recomenda-se trocar apenas o caminho ORS por POST assíncrono
   `httpx`, eliminando thread não cancelável e retries ocultos do SDK. Manter
   JSON, perfis/unidades, `ORS_REQUEST_TIMEOUT` como teto adicional limitado pelo
   saldo da chamada. Remover a dependência SDK/ajustar lock somente se não
   restar uso.
-- [ ] **F3.4** Reutilizar validação de URL antes do envio, redirects off, tamanho
+- [x] **F3.4** Reutilizar validação de URL antes do envio, redirects off, tamanho
   máximo medido **durante streaming** e close limitado em todos os caminhos,
   inclusive erro precoce. O GET atual verifica tamanho após `response.content`,
   quando o corpo já foi carregado (`:1946–1990`); estender a correção aos três
   provedores.
-- [ ] **F3.5** Mapear falhas ORS 401/403/429/5xx e transporte para outcome
+- [x] **F3.5** Mapear falhas ORS 401/403/429/5xx e transporte para outcome
   controlado, sem retry de credencial inválida e sem chave/URL/corpo em logs ou
   respostas.
 
@@ -294,9 +304,20 @@ scheduler documentada. Fixtures de upstream/close que não terminam não deixam
 tasks ou executor workers desta chamada. Resposta excessiva é interrompida sem
 bufferizar todo o corpo. Com F2, fecha-se a issue de cache/cleanup.
 
-**Evidência:** _(a registrar)_
+**Evidência (2026-11-17):** F3 usa cancelamento imediato no limiter; o decorator
+reserva até 100 ms (10% em prazos curtos) de cleanup dentro do deadline total
+configurado e `OsmSearcher.aclose()` compartilha um limite monotônico entre tasks,
+lock e cliente HTTP. ORS de
+produção faz POST JSON assíncrono, validado pela política de URL, redirects
+desativados e corpo limitado durante streaming; Nominatim/Overpass também usam
+streaming. Fixtures verificam cancelamento no limiter, lock, transporte ORS e
+cleanup, payload/perfil ORS e outcomes 401/403/429/503 sem retry. Regressões
+F1, F2, S1, S3, S4 e S5: **84 passed** em Python 3.12.12 via container `uv`, lock
+congelado; a suíte completa passou: **124 passed**. Sem acesso a upstream real.
+Decisão registrada em
+[ADR de transporte assíncrono](../ADR-2026-11-17-async-upstream-transport.md).
 
-- [ ] **F3 concluída** — aceite verificado e evidência registrada.
+- [x] **F3 concluída** — aceite verificado e evidência registrada.
 
 <a id="f4"></a>
 
@@ -496,7 +517,7 @@ agendar uma atualização de runtime.
 | Issue | Trabalho necessário | Evidência para fechar |
 |---|---|---|
 | [Migração ORS](../issues/2026-11-04-ors-api-endpoint-migration.md) | F1 | URL final POST/json correta, prefixo/override/allowlist, exemplos coerentes e ausência de chave controlada. |
-| [Cache / cleanup](../issues/2026-11-16-cache-persist-failure-escapes-as-raw-exception.md) | F2 + F3 | Falhas de I/O e cache inválido sem exceção crua; close/cancelamento com prazo; fixtures portáveis sem plugin externo. |
+| [Cache / cleanup](../issues/closed/2026-11-16-cache-persist-failure-escapes-as-raw-exception.md) | F2 + F3 concluídas | Falhas de I/O e cache inválido sem exceção crua; close/cancelamento dentro do orçamento; regressões isoladas em `tmp_path`. Issue movida para `closed/` após 84 testes focados aprovados em 2026-11-17. |
 | [Outcomes controlados](../issues/2026-10-31-controlled-tool-failure-outcomes-not-counted.md) | F6 | Matriz de status, exceção e cancelamento via callbacks MCP; sem dupla contagem ou labels pessoais. |
 
 Manter cada issue aberta até obter sua evidência; então registrar resultado e
@@ -523,8 +544,10 @@ após F1–F7, ou revisão explícita de escopo que indique os itens adiados.
   locais nem autoriza guardar credenciais no repo/chat. Não prometer disponibilidade
   real com base apenas em fixtures.
 
-Nesta campanha de planejamento foram feitas leitura de código e consultas à
-documentação; testes, benchmarks, builds e deploys das mudanças não foram executados.
+Na análise inicial foram feitas leitura de código e consultas à documentação;
+nenhum teste, benchmark, build ou deploy tinha sido executado naquela etapa.
+Evidências posteriores de F1–F3 estão registradas em cada fase acima. Não foram
+feitos benchmark, build de release ou deploy nesta execução.
 
 <a id="sec-8"></a>
 
@@ -546,10 +569,10 @@ registrar a decisão durável em um único ADR; não exigir ADR para cada corre�
 
 ## 9. Handoff e próxima ação
 
-Próximo incremento recomendado: **F1**, seguido de **F2/F3**. Resultado esperado:
-endpoint ORS atual, import compatível com Python 3.11 e uma baseline de testes
-que não dependa de `/tmp` fixo nem de cleanup ilimitado. Bill é o único decisor;
-não há revisão externa ou aceite duplicado como condição de conclusão.
+Próximo incremento recomendado: validar startup em **Python 3.11** para fechar
+F1. F2/F3 estão concluídas; em seguida, F4 depende da seleção deliberada do
+backend geocodificador descrita na §8. Bill é o único decisor; não há revisão
+externa ou aceite duplicado como condição de conclusão.
 
 O acompanhamento de execução está no [Painel de execução](#execucao) e nas
 caixas de [§4](#sec-4): cada tarefa concluída é marcada individualmente e a

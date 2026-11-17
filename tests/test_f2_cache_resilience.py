@@ -1,3 +1,4 @@
+import asyncio
 import errno
 import json
 
@@ -8,6 +9,8 @@ from percival_osm_mcp import server as server_mod
 
 def settings_for(path):
     return server_mod.Settings(
+        user_agent="percival-osm-test/1.0",
+        from_header="test@example.com",
         upstream_allowed_hosts="nominatim.openstreetmap.org,overpass-api.de,api.heigit.org",
         cache_allowed_dirs=str(path.parent), cache_file=str(path),
     )
@@ -70,3 +73,45 @@ def test_provider_identity_partitions_keys(tmp_path):
     second = server_mod.OsmCache(other_settings)
     first.set("same", "first-provider")
     assert second.get("same") is None
+
+
+@pytest.mark.asyncio
+async def test_limiter_propagates_waiter_cancellation():
+    limiter = server_mod.AsyncTokenBucket(rate_per_second=0.001, burst=1)
+    await limiter.acquire()
+    waiter = asyncio.create_task(limiter.acquire())
+    await asyncio.sleep(0)
+    waiter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+
+
+@pytest.mark.asyncio
+async def test_http_response_size_is_enforced_during_stream(tmp_path):
+    import httpx
+
+    settings = settings_for(tmp_path / "cache.json")
+    settings.http_max_response_bytes = 1024
+
+    class OversizedStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b"{" + b" " * 1024
+            yield b" " * 1024 + b"}"
+
+        async def aclose(self):
+            return None
+
+    async def handler(request):
+        return httpx.Response(200, stream=OversizedStream(), request=request)
+
+    searcher = server_mod.OsmSearcher(settings, user_valves=None)
+    searcher._http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        with pytest.raises(ValueError, match="exceeds OSM_HTTP_MAX_RESPONSE_BYTES"):
+            await searcher._http_get_json(
+                settings.nominatim_url,
+                {},
+                {"User-Agent": "test", "From": "test@example.com"},
+            )
+    finally:
+        await searcher.aclose()
