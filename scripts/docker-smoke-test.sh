@@ -107,8 +107,9 @@ run "stdio MCP initialize and canonical tools/list" \
         --image "${IMAGE}" \
         --env 'USER_AGENT=smoke-test/1.0 (smoke@example.invalid)' \
         --env FROM_HEADER=smoke@example.invalid \
+        --env NOMINATIM_URL=https://nominatim.openstreetmap.org/ \
         --env OSM_HTTP_TIMEOUT_SECONDS=2 \
-        --env OSM_NOMINATIM_RATE_LIMIT_RPS=0 \
+        --env OSM_NOMINATIM_RATE_LIMIT_RPS=1 \
         --expected-uid 10001 \
         --expected-tool osm_find_nearby \
         --expected-tool osm_find_place \
@@ -135,6 +136,7 @@ HTTP_CID=$(docker run -d \
     --health-start-period=5s \
     -e USER_AGENT="smoke-test/1.0 (smoke@example.invalid)" \
     -e FROM_HEADER="smoke@example.invalid" \
+    -e NOMINATIM_URL="https://nominatim.openstreetmap.org/" \
     -e MODE=streamable-http \
     -e PORT=8080 \
     -e ALLOW_REMOTE_HTTP=true \

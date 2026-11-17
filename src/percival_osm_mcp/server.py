@@ -3,6 +3,8 @@ import argparse
 import sys
 import asyncio
 import contextvars
+import concurrent.futures
+from contextlib import asynccontextmanager
 import html
 import hmac
 import logging
@@ -15,6 +17,7 @@ from threading import Lock
 
 from typing import Any, Annotated, List, Mapping, Optional, Tuple
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 import functools
 import inspect
 from importlib.metadata import PackageNotFoundError, version as package_version
@@ -210,7 +213,7 @@ class Settings(BaseSettings):
         ),
     )
     nominatim_rate_limit_burst: int = Field(
-        default=2,
+        default=1,
         validation_alias=AliasChoices(
             "nominatim_rate_limit_burst",
             "OSM_NOMINATIM_RATE_LIMIT_BURST",
@@ -220,6 +223,20 @@ class Settings(BaseSettings):
 
 class UpstreamRequestError(RuntimeError):
     """An upstream request failed or returned a response we cannot use."""
+
+
+class ProviderCooldown(UpstreamRequestError):
+    def __init__(self, seconds: float):
+        self.retry_after_seconds = max(1, math.ceil(seconds))
+        super().__init__("Provider rate limited; retry later.")
+
+
+def _cooldown_data(exc: BaseException) -> Optional[dict[str, Any]]:
+    while exc is not None:
+        if isinstance(exc, ProviderCooldown):
+            return {"reason": "provider_cooldown", "retry_after_seconds": exc.retry_after_seconds}
+        exc = exc.__cause__
+    return None
 
 
 def _upstream_error_summary(exc: Exception) -> str:
@@ -318,6 +335,7 @@ CANCELLATION_CLEANUP_TIMEOUT_SECONDS = 0.1
 _CALL_CLEANUP_BUDGET = contextvars.ContextVar(
     "osm_call_cleanup_budget", default=CANCELLATION_CLEANUP_TIMEOUT_SECONDS
 )
+_CALL_DEADLINE = contextvars.ContextVar("osm_call_deadline", default=None)
 
 # Initialize FastMCP server
 mcp = FastMCP(
@@ -796,6 +814,11 @@ def validate_upstream_url_policy(url: str, *, settings: Settings, label: str) ->
 
 
 def validate_upstream_runtime_configuration(settings: Settings) -> None:
+    if (urlsplit(settings.nominatim_url).hostname or "").lower() == "nominatim.openstreetmap.org":
+        if not math.isfinite(settings.nominatim_rate_limit_rps) or not 0 < settings.nominatim_rate_limit_rps <= 1:
+            raise ValueError("Public Nominatim requires OSM_NOMINATIM_RATE_LIMIT_RPS > 0 and <= 1.")
+        if settings.nominatim_rate_limit_burst != 1:
+            raise ValueError("Public Nominatim requires OSM_NOMINATIM_RATE_LIMIT_BURST=1.")
     validate_upstream_url_policy(
         settings.nominatim_url,
         settings=settings,
@@ -815,6 +838,20 @@ def validate_upstream_runtime_configuration(settings: Settings) -> None:
             settings=settings,
             label="ors_instance",
         )
+
+
+def validate_geocoder_selection(settings: Settings) -> None:
+    if "nominatim_url" not in settings.model_fields_set or not settings.nominatim_url.strip():
+        raise ValueError(
+            "Select a geocoding backend explicitly with NOMINATIM_URL; "
+            "for public Nominatim use https://nominatim.openstreetmap.org/ "
+            "only after reviewing https://operations.osmfoundation.org/policies/nominatim/."
+        )
+    if (urlsplit(settings.nominatim_url).hostname or "").lower() != "nominatim.openstreetmap.org":
+        if not {"nominatim_rate_limit_rps", "nominatim_rate_limit_burst"}.issubset(settings.model_fields_set):
+            raise ValueError("Custom Nominatim requires explicit OSM_NOMINATIM_RATE_LIMIT_RPS and OSM_NOMINATIM_RATE_LIMIT_BURST.")
+        if not math.isfinite(settings.nominatim_rate_limit_rps) or settings.nominatim_rate_limit_rps <= 0 or settings.nominatim_rate_limit_burst < 1:
+            raise ValueError("Custom Nominatim rate and burst must be positive and finite.")
 
 
 def resolve_secure_cache_path(filename: str, *, settings: Settings) -> Path:
@@ -1602,6 +1639,75 @@ class AsyncTokenBucket:
         self._last = time.monotonic()
 
 
+class ProviderBudget:
+    """Process-wide provider admission; lock is safe across event loops."""
+
+    def __init__(self) -> None:
+        self.lock = Lock()
+        self.busy = False
+        self.last_start: float | None = None
+        self.interval = 0.0
+        self.cooldown_until = 0.0
+
+    def cooldown(self, seconds: float) -> None:
+        with self.lock:
+            self.cooldown_until = max(self.cooldown_until, time.monotonic() + seconds)
+
+    @asynccontextmanager
+    async def admission(self, interval: float):
+        while True:
+            with self.lock:
+                now = time.monotonic()
+                self.interval = max(self.interval, interval)
+                if self.cooldown_until > now:
+                    raise ProviderCooldown(self.cooldown_until - now)
+                wait = max(0.0, (self.last_start + self.interval - now) if self.last_start is not None else 0.0)
+                if not self.busy and wait <= 0:
+                    self.busy = True
+                    self.last_start = now
+                    break
+            await asyncio.sleep(max(0.001, min(wait if wait else 0.02, 0.05)))
+        try:
+            yield
+        finally:
+            with self.lock:
+                self.busy = False
+
+
+_PROVIDER_BUDGETS: dict[str, ProviderBudget] = {}
+_PROVIDER_BUDGETS_LOCK = Lock()
+_FLIGHTS_LOCK = Lock()
+_FLIGHTS: dict[str, dict[str, Any]] = {}
+
+
+def _provider_budget(url: str) -> ProviderBudget:
+    host = (urlsplit(url).hostname or "").lower()
+    with _PROVIDER_BUDGETS_LOCK:
+        return _PROVIDER_BUDGETS.setdefault(host, ProviderBudget())
+
+
+def _retry_after_seconds(value: str | None) -> float:
+    if not value:
+        return 0.0
+    try:
+        return max(0.0, float(int(value.strip())))
+    except (ValueError, OverflowError):
+        try:
+            parsed = parsedate_to_datetime(value)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return max(0.0, (parsed - datetime.now(timezone.utc)).total_seconds())
+        except (ValueError, TypeError, OverflowError):
+            return 0.0
+
+
+def _overpass_ql_timeout(remaining: float) -> int:
+    timeout = min(10, math.ceil(remaining) - 1)
+    if timeout < 1:
+        raise UpstreamRequestError("Insufficient deadline remaining for Overpass query.")
+    return timeout
+
+
 class OsmCache:
     _LOCKS_GUARD = Lock()
     _FILE_LOCKS: dict[str, Lock] = {}
@@ -1859,6 +1965,8 @@ class OsmSearcher:
             default_ttl_seconds=self.valves.cache_ttl_seconds,
         )
         self._http_client: Optional[httpx.AsyncClient] = None
+        self._provider_tasks: set[asyncio.Task] = set()
+        self._deferred_provider_close = False
         self._http_client_lock = asyncio.Lock()
         self._validated_upstreams: set[str] = set()
         self._validated_upstreams_lock = asyncio.Lock()
@@ -1868,10 +1976,6 @@ class OsmSearcher:
         self._distance_futures: dict[str, asyncio.Future] = {}
         self._distance_futures_lock = asyncio.Lock()
         self._distance_tasks: set[asyncio.Task] = set()
-        self._nominatim_limiter = AsyncTokenBucket(
-            rate_per_second=self.valves.nominatim_rate_limit_rps,
-            burst=self.valves.nominatim_rate_limit_burst,
-        )
 
     def create_headers(self) -> Optional[dict]:
         if len(self.valves.user_agent.strip()) == 0 or len(self.valves.from_header.strip()) == 0:
@@ -1966,6 +2070,11 @@ class OsmSearcher:
                             }
                 except TimeoutError:
                     logger.warning("Distance task registry cleanup exceeded its budget")
+        if any(not task.done() for task in self._provider_tasks):
+            # A different consumer may still be using a flight initiated by
+            # this searcher. The flight owns its client's eventual close.
+            self._deferred_provider_close = True
+            return
         if self._http_client is not None:
             client = self._http_client
             if cancel_pending:
@@ -1991,17 +2100,96 @@ class OsmSearcher:
                 finally:
                     self._http_client = None
 
-    def _rate_limiter_for(self, url: str) -> Optional[AsyncTokenBucket]:
-        """Return the appropriate rate limiter for a given upstream URL."""
-        try:
-            host = (urlsplit(url).hostname or "").lower()
-        except ValueError:
-            return None
-        if host.endswith("nominatim.openstreetmap.org"):
-            return self._nominatim_limiter
-        return None
+    @asynccontextmanager
+    async def _provider_stream(self, client, url, params, headers):
+        host = (urlsplit(url).hostname or "").lower()
+        budget = _provider_budget(url)
+        geocoder_host = (urlsplit(self.valves.nominatim_url).hostname or "").lower()
+        interval = (1.0 / self.valves.nominatim_rate_limit_rps
+                    if host in {"nominatim.openstreetmap.org", geocoder_host} else 0.0)
+        if host == "nominatim.openstreetmap.org":
+            interval = max(1.0, interval)
+        async with budget.admission(interval):
+            if isinstance(params.get("data"), str) and "__OSM_QL_TIMEOUT__" in params["data"]:
+                deadline = _CALL_DEADLINE.get()
+                remaining = (deadline - time.monotonic()) if deadline is not None else float(self.valves.upstream_tool_deadline_seconds)
+                ql_timeout = _overpass_ql_timeout(remaining)
+                params = {**params, "data": params["data"].replace("__OSM_QL_TIMEOUT__", str(ql_timeout))}
+            async with client.stream("GET", url, params=params, headers=headers) as response:
+                delay = _retry_after_seconds(response.headers.get("retry-after"))
+                if host == "overpass-api.de" and response.status_code in {406, 429}:
+                    delay = max(30.0, delay)
+                if response.status_code == 429 and delay == 0:
+                    delay = 1.0
+                if delay and (response.status_code in {406, 429} or response.status_code >= 500):
+                    budget.cooldown(delay)
+                    raise ProviderCooldown(delay)
+                yield response
 
     async def _http_get_json(self, url: str, params: dict[str, Any], headers: dict[str, str]) -> Any:
+        validate_upstream_url_policy(url, settings=self.valves, label="upstream_request_url")
+        policy = [self.valves.http_timeout_seconds, self.valves.http_max_retries,
+                  self.valves.http_retry_backoff_seconds, self.valves.http_follow_redirects,
+                  self.valves.http_max_response_bytes, self.valves.nominatim_rate_limit_rps,
+                  self.valves.upstream_allowed_hosts, self.valves.require_https_upstreams]
+        key = _stable_cache_key("flight", [url, params, headers, policy])
+        with _FLIGHTS_LOCK:
+            flight = _FLIGHTS.get(key)
+            if flight is None:
+                async def run():
+                    try:
+                        return await self._http_get_json_unshared(url, params, headers)
+                    finally:
+                        if self._deferred_provider_close and self._http_client is not None:
+                            client, self._http_client = self._http_client, None
+                            try:
+                                async with asyncio.timeout(CANCELLATION_CLEANUP_TIMEOUT_SECONDS):
+                                    await client.aclose()
+                            except TimeoutError:
+                                logger.warning("Deferred HTTP client close timed out")
+
+                task = asyncio.create_task(run())
+                self._provider_tasks.add(task)
+                task.add_done_callback(self._provider_tasks.discard)
+                result = concurrent.futures.Future()
+
+                def publish(completed):
+                    if completed.cancelled():
+                        result.cancel()
+                    else:
+                        error = completed.exception()
+                        if error is None:
+                            result.set_result(completed.result())
+                        else:
+                            result.set_exception(error)
+
+                task.add_done_callback(publish)
+                flight = {"task": task, "loop": asyncio.get_running_loop(),
+                          "result": result, "waiters": 0}
+                _FLIGHTS[key] = flight
+            flight["waiters"] += 1
+        task = flight["task"]
+        wrapped = asyncio.wrap_future(flight["result"])
+        wrapped.add_done_callback(lambda done: None if done.cancelled() else done.exception())
+        try:
+            return await asyncio.shield(wrapped)
+        finally:
+            cancel = False
+            with _FLIGHTS_LOCK:
+                flight["waiters"] -= 1
+                if flight["waiters"] == 0:
+                    if _FLIGHTS.get(key) is flight:
+                        del _FLIGHTS[key]
+                    cancel = not task.done()
+                    if cancel:
+                        flight["loop"].call_soon_threadsafe(task.cancel)
+            if cancel:
+                await asyncio.wait({wrapped}, timeout=min(
+                    CANCELLATION_CLEANUP_TIMEOUT_SECONDS,
+                    max(0.001, _CALL_CLEANUP_BUDGET.get()),
+                ))
+
+    async def _http_get_json_unshared(self, url: str, params: dict[str, Any], headers: dict[str, str]) -> Any:
         # Race-free check-then-add via asyncio lock so that two concurrent
         # callers don't both run validate_upstream_url_policy for the same
         # URL (which would duplicate security events and risk settings races).
@@ -2015,19 +2203,15 @@ class OsmSearcher:
         backoff = max(0.0, self.valves.http_retry_backoff_seconds)
         max_response_bytes = max(1024, int(self.valves.http_max_response_bytes))
         last_exception: Optional[Exception] = None
-        rate_limiter = self._rate_limiter_for(url)
-
         for attempt in range(max_attempts):
             try:
-                if rate_limiter is not None:
-                    await rate_limiter.acquire()
                 async with self._http_semaphore:
                     client = await self._get_http_client()
                     current_url = url
                     current_params = params
                     for _ in range(6):
-                        async with client.stream(
-                            "GET", current_url, params=current_params, headers=headers
+                        async with self._provider_stream(
+                            client, current_url, current_params, headers
                         ) as response:
                             if response.status_code in {301, 302, 303, 307, 308} and self.valves.http_follow_redirects:
                                 location = response.headers.get("location")
@@ -2603,7 +2787,7 @@ class OsmSearcher:
         # "out geom;" is needed to get bounding box info of ways,
         # so we can calculate the coordinates.
         query = f"""
-            [out:json];
+            [out:json][timeout:__OSM_QL_TIMEOUT__][maxsize:67108864];
             (
                 {search}
             );
@@ -2657,10 +2841,12 @@ class OsmSearcher:
                     if processed is not None:
                         things_missing_names.append(processed)
 
-        # attempt to update ways that have no names/addresses.
+        # Enrichment is additional geocoding work, independent of the output
+        # limit. Bound it even if Overpass returns thousands of bare elements.
         if len(things_missing_names) > 0:
-            logger.debug("Updating %d things with info", len(things_missing_names))
-            for way_chunk in chunk_list(things_missing_names, 20):
+            enrichment_candidates = things_missing_names[:20]
+            logger.debug("Updating %d things with info", len(enrichment_candidates))
+            for way_chunk in chunk_list(enrichment_candidates, 20):
                 updated = await self.nominatim_lookup_by_id(way_chunk)
                 ways = ways + updated
 
@@ -2738,13 +2924,14 @@ class OsmSearcher:
                 ),
                 "things": [],
             }
-        except UpstreamRequestError:
+        except UpstreamRequestError as exc:
             return {
                 "place_display_name": place,
                 "results": build_tool_response(
                     status="upstream_error",
                     message="Nominatim could not complete the place lookup.",
                     query=query_payload,
+                    data=_cooldown_data(exc),
                 ),
                 "things": [],
             }
@@ -2880,7 +3067,7 @@ class OsmSearcher:
                 ),
                 "things": [],
             }
-        except UpstreamRequestError:
+        except UpstreamRequestError as exc:
             await self.event_search_complete(category, place_display_name, 0)
             return {
                 "place_display_name": place_display_name,
@@ -2888,6 +3075,7 @@ class OsmSearcher:
                     status="upstream_error",
                     message="An OSM provider request failed; retry later.",
                     query=query_payload,
+                    data=_cooldown_data(exc),
                 ),
                 "things": [],
             }
@@ -3039,6 +3227,9 @@ async def _search_nearby_with_deadline(
     category: str,
     response_mode: Optional[str],
 ) -> tuple[dict[str, Any], bool]:
+    current_deadline = _CALL_DEADLINE.get()
+    effective_deadline = min(current_deadline, time.monotonic() + timeout_seconds) if current_deadline else time.monotonic() + timeout_seconds
+    deadline_token = _CALL_DEADLINE.set(effective_deadline)
     try:
         deadline = asyncio.timeout(timeout_seconds)
         async with deadline:
@@ -3078,6 +3269,8 @@ async def _search_nearby_with_deadline(
             ),
             "things": [],
         }, True
+    finally:
+        _CALL_DEADLINE.reset(deadline_token)
 
 
 def unsupported_category_message(category: str) -> str:
@@ -3153,11 +3346,12 @@ async def find_specific_place_impl(address_or_place: str, response_mode: str) ->
                 message=NO_RESULTS,
                 query=query_payload,
             )
-    except UpstreamRequestError:
+    except UpstreamRequestError as exc:
         return build_tool_response(
             status="upstream_error",
             message="Nominatim could not complete the place lookup; retry later.",
             query=query_payload,
+            data=_cooldown_data(exc),
         )
     except Exception:
         logger.exception("Unexpected specific place lookup error")
@@ -3335,6 +3529,7 @@ class OsmNavigator:
                     else "Navigation failed due to an internal error."
                 ),
                 query=query_payload,
+                data=_cooldown_data(e),
             )
         finally:
             await searcher.aclose()
@@ -3460,6 +3655,7 @@ class OsmNavigator:
                     else "Turn-by-turn directions failed due to an internal error."
                 ),
                 query=query_payload,
+                data=_cooldown_data(e),
             )
         finally:
             await searcher.aclose()
@@ -3491,6 +3687,7 @@ def _track(tool_name: str):
                     )
                     execution_budget = max(0.001, timeout_seconds - cleanup_budget)
                     cleanup_token = _CALL_CLEANUP_BUDGET.set(cleanup_budget)
+                    call_deadline_token = _CALL_DEADLINE.set(time.monotonic() + execution_budget)
                     deadline = asyncio.timeout(execution_budget)
                     try:
                         async with deadline:
@@ -3513,6 +3710,7 @@ def _track(tool_name: str):
                             query={},
                         )
                     finally:
+                        _CALL_DEADLINE.reset(call_deadline_token)
                         _CALL_CLEANUP_BUDGET.reset(cleanup_token)
                 return await fn(*args, **kwargs)
             except Exception:
@@ -3583,11 +3781,12 @@ async def find_address_for_coordinates(
     }
     try:
         result = await searcher.nominatim_reverse(latitude, longitude)
-    except UpstreamRequestError:
+    except UpstreamRequestError as exc:
         return build_tool_response(
             status="upstream_error",
             message="Nominatim could not complete the reverse lookup; retry later.",
             query=query_payload,
+            data=_cooldown_data(exc),
         )
     except ValueError as exc:
         logger.warning("Reverse geocoding config error: %s", exc)
@@ -3764,11 +3963,12 @@ async def geocode_place(
     }
     try:
         result = await searcher.nominatim_search(place, limit=limit)
-    except UpstreamRequestError:
+    except UpstreamRequestError as exc:
         return build_tool_response(
             status="upstream_error",
             message="Nominatim could not complete the geocoding request; retry later.",
             query=query_payload,
+            data=_cooldown_data(exc),
         )
     except ValueError as exc:
         logger.warning("Geocode config error: %s", exc)
@@ -4208,6 +4408,7 @@ async def run_server(
     Unified server runner supporting stdio, SSE, and streamable-http modes.
     """
     validate_tool_exposure_configuration()
+    validate_geocoder_selection(valves)
     validate_upstream_runtime_configuration(valves)
     _validate_http_runtime_security(
         mode=mode,
@@ -4289,6 +4490,7 @@ async def async_main() -> None:
     port = args.port if args.port is not None else int(os.environ.get("PORT", DEFAULT_PORT))
     auth_token = os.environ.get(args.auth_token_env, "").strip() or None
 
+    validate_geocoder_selection(valves)
     validate_upstream_runtime_configuration(valves)
     logger.info("Starting Percival OSM MCP server in %s mode...", args.mode)
     await run_server(

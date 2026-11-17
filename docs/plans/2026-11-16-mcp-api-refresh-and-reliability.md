@@ -1,7 +1,7 @@
 # Plano — atualização das APIs e confiabilidade do Percival OSM MCP
 
 - **Data / revisão:** 2026-11-17 / 1.2
-- **Estado:** em execução; F2/F3 concluídas e verificadas, F1 aguarda validação em Python 3.11.
+- **Estado:** em execução; F2/F3/F4 concluídas e verificadas, F1 aguarda validação em Python 3.11.
 - **Owner / executor / decisor:** Bill Kopp, Positronic Bean Labs.
 - **Objetivo:** resolver as três issues abertas e atualizar a integração com os
   provedores realmente utilizados, preservando o contrato MCP e os controles de
@@ -24,13 +24,13 @@ O plano é executado fase a fase. As listas com caixas em [§4](#sec-4) são a f
 depois de verificar o aceite daquela fase.
 
 **Estado atual:** F1 implementada, aguardando a validação de startup em Python
-3.11; F2 e F3 implementadas e verificadas. Próximo incremento: completar F1
-com Python 3.11, ou avançar F4 após a decisão de backend da §8.
+3.11; F2, F3 e F4 implementadas e verificadas. Próximo incremento: completar F1
+com Python 3.11 ou avançar F5.
 
 - [ ] [F1](#f1) — Migração ORS e baseline portável — P1 — R1, R11
 - [x] [F2](#f2) — Cache resiliente e fixtures isolados — P1 — R2
 - [x] [F3](#f3) — Orçamento único de prazo, transporte e cancelamento — P1 — R2, R5, R6
-- [ ] [F4](#f4) — Políticas dos provedores e controle agregado — P1 — R4, R7
+- [x] [F4](#f4) — Políticas dos provedores e controle agregado — P1 — R4, R7
 - [ ] [F5](#f5) — Resultados compatíveis e procedência — P2 — R7–R9
 - [ ] [F6](#f6) — Telemetria dos outcomes MCP — P2 — R3
 - [ ] [F7](#f7) — Documentação, pacote e verificação integrada — P2 — R9–R11
@@ -44,8 +44,8 @@ com Python 3.11, ou avançar F4 após a decisão de backend da §8.
   e mover a issue correspondente para `closed/`.
 - As referências a linhas de código (R1–R11) valem para a base `42f1cf2`;
   revalidar após cada fase que tocar aquele arquivo.
-- A configuração final de F4 depende das decisões da [§8](#sec-8); F1–F3 e os
-  testes simulados podem avançar antes disso.
+- Bill escolheu o Nominatim público para o perfil individual; a configuração
+  operacional de cada manager continua distinta da implementação local.
 - P1 indica disponibilidade, prazo ou uso efetivo de serviço público; P2 indica
   qualidade ou visibilidade. São prioridades deste plano, não SLAs.
 
@@ -132,8 +132,8 @@ Nesta seção, `server.py` designa `src/percival_osm_mcp/server.py`.
 | R11 | `pyproject.toml` declara Python >=3.11, mas `server.py:38` importa `itertools.batched`, introduzido em 3.12. | Corrigir compatibilidade com 3.11 e testá-la; não aumentar silenciosamente o requisito mínimo. |
 
 Os achados R4–R11 foram de inspeção estática na análise inicial; as falhas de
-cache R2 já tinham reprodução registrada na issue. F1–F3 estão sendo executadas
-conforme o painel; os demais achados continuam pendentes. Não reabrir
+cache R2 já tinham reprodução registrada na issue. As fases seguem o painel;
+os achados de fases posteriores continuam pendentes. Não reabrir
 automaticamente as issues históricas de tracking/deadline: testar e tratar os
 caminhos adicionais nas fases correspondentes.
 
@@ -323,36 +323,43 @@ Decisão registrada em
 
 ### Fase F4 — Políticas dos provedores e controle agregado
 
-*P1 · lacunas R4, R7 · depende da decisão de backend da §8.*
+*P1 · lacunas R4, R7 · backend selecionado por Bill.*
+
+**Decisão (2026-11-17):** Bill escolheu o Nominatim público para uso
+individual, com agentes pessoais auto-hospedados e poucas consultas semanais.
+O limite é agregado por aplicação; processos separados exigem coordenação.
+
+**Resultado:** controles compartilhados por host no processo e seleção explícita
+de backend; o limite entre processos exige gateway comum ou outro backend.
 
 **Tarefas**
 
-- [ ] **F4.1** Criar contexto mínimo compartilhado por processo/backend para
+- [x] **F4.1** Criar contexto mínimo compartilhado por processo/backend para
   limiter, concorrência, cooldown e single-flight. Dois `OsmSearcher` não podem
   reiniciar o orçamento. Coalescer chamadas idênticas de Nominatim/Overpass, com
   cancelamento isolado por consumidor e encerramento quando não houver
   consumidores.
-- [ ] **F4.2** Para `nominatim.openstreetmap.org`, impor espaçamento >=1 s entre
+- [x] **F4.2** Para `nominatim.openstreetmap.org`, impor espaçamento >=1 s entre
   partidas, sem burst inicial de duas requisições, concorrência máxima 1 e
   validação que rejeite desativação/aumento desse limite. Aplicar a
   search/reverse/lookup e retries/redirects eventualmente habilitados.
   Instâncias próprias/contratadas usam parâmetros explícitos correspondentes
   aos seus termos.
-- [ ] **F4.3** Tornar explícita a seleção do backend geocodificador na
+- [x] **F4.3** Tornar explícita a seleção do backend geocodificador na
   configuração de integração. Recomendação para distribuição genérica: não
   selecionar o serviço público implicitamente; migrar com erro de configuração
   claro e instrução de escolha. O uso individual existente pode ser configurado
   deliberadamente por Bill uma vez, sem criar aceite por chamada. Documentar
   restrições LLM, ausência de SLA e proibição de autocomplete/coleta
   sistemática [S4].
-- [ ] **F4.4** Agregar por aplicação: um limiter em processo não coordena os dois
+- [x] **F4.4** Agregar por aplicação: um limiter em processo não coordena os dois
   gestores Percival/Positronic ou réplicas. Para compartilharem Nominatim
   público, usar gateway único ou outro backend; não alegar conformidade global
   só por processo.
-- [ ] **F4.5** Overpass público: concorrência conservadora 1, cache, timeout QL
+- [x] **F4.5** Overpass público: concorrência conservadora 1, cache, timeout QL
   explícito menor que o saldo da chamada e `[maxsize]` limitado. Impor teto de
   trabalho/enriquecimento; `limit` de saída não é limite de custo da consulta.
-- [ ] **F4.6** Respeitar `Retry-After` (segundos/data HTTP) e cooldown
+- [x] **F4.6** Respeitar `Retry-After` (segundos/data HTTP) e cooldown
   compartilhado. Em Overpass 429/406, aplicar pausa mínima de 30 s conforme
   orientação da instância [S7]; como supera nosso deadline, retornar
   `upstream_error` com indicação categórica e `retry_after_seconds`, sem dormir
@@ -366,9 +373,14 @@ deadline. Configuração pública inválida falha alto. Não implementar circuit
 complexo ou quotas por usuário sem necessidade: cooldown por provedor resolve o
 risco constatado; orçamento multiusuário fica para o perfil escolhido.
 
-**Evidência:** _(a registrar)_
+**Evidência (2026-11-17):** suíte completa **143 passed** em Python 3.12.15,
+sem upstream real; fixture de relógio verifica concorrência e espaçamento,
+fixtures HTTP verificam single-flight inclusive entre event loops, cancelamento,
+cache, cooldown 406/429 e `Retry-After`, timeout/maxsize QL e teto de 20
+enriquecimentos. Teste stdio inicializa MCP e chama health com backend explícito.
+Controle compartilhado é por processo, não entre managers; não houve deploy.
 
-- [ ] **F4 concluída** — aceite verificado e evidência registrada.
+- [x] **F4 concluída** — aceite verificado e evidência registrada.
 
 <a id="f5"></a>
 
@@ -546,18 +558,14 @@ após F1–F7, ou revisão explícita de escopo que indique os itens adiados.
 
 Na análise inicial foram feitas leitura de código e consultas à documentação;
 nenhum teste, benchmark, build ou deploy tinha sido executado naquela etapa.
-Evidências posteriores de F1–F3 estão registradas em cada fase acima. Não foram
+Evidências posteriores de F1–F4 estão registradas em cada fase acima. Não foram
 feitos benchmark, build de release ou deploy nesta execução.
 
 <a id="sec-8"></a>
 
 ## 8. Decisões pendentes que afetam a implementação
 
-1. **Perfil de uso e backend geocodificador:** Bill definirá uso individual
-   ocasional ou serviço compartilhado/recorrente e a instância correspondente.
-   Recomenda-se backend próprio/contratado para o segundo caso. F1–F3 e testes
-   simulados podem avançar sem essa seleção; configuração final de F4 depende dela.
-2. **Instância em rede privada:** se for escolhida, definir acesso restrito por
+1. **Instância em rede privada:** se for escolhida no futuro, definir acesso restrito por
    gateway/rede e política de destino específica. Não abrir uma exceção genérica
    para hosts privados ou ampliar allowlist por descoberta automática.
 
@@ -570,8 +578,7 @@ registrar a decisão durável em um único ADR; não exigir ADR para cada corre�
 ## 9. Handoff e próxima ação
 
 Próximo incremento recomendado: validar startup em **Python 3.11** para fechar
-F1. F2/F3 estão concluídas; em seguida, F4 depende da seleção deliberada do
-backend geocodificador descrita na §8. Bill é o único decisor; não há revisão
+F1 ou avançar F5. F2/F3/F4 estão concluídas. Bill é o único decisor; não há revisão
 externa ou aceite duplicado como condição de conclusão.
 
 O acompanhamento de execução está no [Painel de execução](#execucao) e nas

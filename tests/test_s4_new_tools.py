@@ -114,6 +114,10 @@ async def test_nearby_deadline_returns_controlled_error_and_cancels(
 
 
 async def test_registered_nearby_timeout_reaches_mcp_caller(monkeypatch) -> None:
+    monkeypatch.setattr(server_mod, "_PROVIDER_BUDGETS", {})
+    # This test targets cancellation inside the transport; subsecond deadlines
+    # normally fail before sending an Overpass query (integer QL timeout).
+    monkeypatch.setattr(server_mod, "_overpass_ql_timeout", lambda remaining: 1)
     settings = _base_settings(upstream_tool_deadline_seconds=0.02)
     overpass_cancelled = asyncio.Event()
     close_cancelled = asyncio.Event()

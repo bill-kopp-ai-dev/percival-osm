@@ -54,6 +54,12 @@ config:
       env: ORS_API_KEY
       example: YOUR_OPENROUTESERVICE_API_KEY
   env:
+    - name: NOMINATIM_URL
+      description: >-
+        Explicit Nominatim-compatible backend URL. Review the provider policy;
+        for the public service see https://operations.osmfoundation.org/policies/nominatim/.
+      example: https://nominatim.openstreetmap.org/
+      required: true
     - name: USER_AGENT
       description: >-
         Outgoing User-Agent header (required by the OSM Nominatim
@@ -86,6 +92,10 @@ config:
   parameters:
     type: object
     properties:
+      nominatim_url:
+        type: string
+        title: Geocoding backend URL
+        description: Explicit Nominatim-compatible backend selected by the operator.
       user_agent:
         type: string
         title: User-Agent
@@ -105,5 +115,6 @@ config:
           provider_not_configured. Haversine is only used to choose the
           routing profile when ORS is configured.
     required:
+      - nominatim_url
       - user_agent
       - from_header

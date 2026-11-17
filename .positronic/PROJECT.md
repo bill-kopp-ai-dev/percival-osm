@@ -24,7 +24,7 @@ controle do operador.
   `osm_output_format`) e 2 primitivas de resource (`osm://categories`,
   `osm://security/nanobot-policy`).
 - Hardening: HTTPS-only, URL allow-list, sanitização contra
-  prompt-injection, rate-limit Nominatim (1 req/s + burst 2) com
+  prompt-injection, rate-limit Nominatim (1 req/s sem burst) com
   single-flight.
 - Observabilidade: `osm_get_health`, `osm_get_version`,
   `osm_get_security_metrics`, logging estruturado em stderr.
@@ -71,7 +71,8 @@ controle do operador.
 
 - Cumprimento **obrigatório** da política de uso do Nominatim:
   `USER_AGENT` e `FROM_HEADER` não vazios (o servidor aborta com
-  `ValueError` se faltarem) e rate-limit 1 req/s + burst 2 respeitado.
+  `ValueError` se faltarem) e rate-limit por processo de 1 req/s sem burst;
+  processos separados exigem coordenação para o limite agregado da aplicação.
 - Dependência do **OpenRouteService** (`ORS_API_KEY`) para tools de rota:
   sem chave, retornar `provider_not_configured`; haversine serve apenas para
   selecionar o perfil quando ORS está configurado.

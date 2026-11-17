@@ -25,6 +25,13 @@ antes de aplicar o limite configurado.
   assim que o limite de bytes é excedido. Redirects seguem desativados por
   padrão e URLs de cada salto continuam sujeitas à allowlist.
 - Cancelamento propaga sem ser absorvido pelo limiter nem transformado em retry.
+- Para Nominatim e Overpass, orçamento de concorrência, espaçamento e cooldown
+  pertence ao processo e ao host do provedor; requisições idênticas compartilham
+  uma operação. Cada consumidor pode cancelar sem cancelar os demais; quando o
+  último sai, a operação é cancelada. O cliente da operação é fechado após o
+  término quando o searcher que a iniciou já encerrou.
+- O estado em memória não coordena processos ou máquinas. Uso agregado do
+  Nominatim público entre gestores exige gateway único ou outro backend.
 
 ## Consequências
 

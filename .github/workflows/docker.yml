@@ -64,12 +64,14 @@ jobs:
           USER_AGENT: smoke-test/1.0 (ci@example.invalid)
           FROM_HEADER: ci@example.invalid
           MCP_OSM_AUTH_TOKEN: ci-osm-token-not-a-secret
-          OSM_NOMINATIM_RATE_LIMIT_RPS: "0"
+          NOMINATIM_URL: https://nominatim.openstreetmap.org/
+          OSM_NOMINATIM_RATE_LIMIT_RPS: "1"
         run: |
           python3 scripts/docker-ci-conformance.py \
             --image "$IMAGE" \
             --env "USER_AGENT=$USER_AGENT" \
             --env "FROM_HEADER=$FROM_HEADER" \
+            --env "NOMINATIM_URL=$NOMINATIM_URL" \
             --secret-env "MCP_OSM_AUTH_TOKEN=$MCP_OSM_AUTH_TOKEN" \
             --expected-tool osm_get_version \
             --expected-version "$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')" \

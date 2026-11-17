@@ -149,6 +149,7 @@ tokens unless the agent explicitly asks for them.
         "command": "percival-osm-mcp",
         "args": ["--mode", "stdio"],
         "env": {
+          "NOMINATIM_URL": "https://nominatim.openstreetmap.org/",
           "USER_AGENT": "percival-osm/0.4.1 (you@example.com)",
           "FROM_HEADER": "you@example.com",
           "ORS_API_KEY": "${OPENROUTESERVICE_API_KEY}",
@@ -187,7 +188,8 @@ variable the server recognises, with its default). Highlights:
 OSM_EXPOSED_TOOLS=osm_find_nearby,osm_find_place,osm_find_address,osm_geocode,osm_directions,osm_get_health,osm_get_security_metrics,osm_get_version
 OSM_EXPOSE_LEGACY_ALIASES=true          # additional gate for category aliases
 OSM_NOMINATIM_RATE_LIMIT_RPS=1.0        # respect Nominatim usage policy
-OSM_NOMINATIM_RATE_LIMIT_BURST=2        # small burst above the average
+OSM_NOMINATIM_RATE_LIMIT_BURST=1        # public service: no burst
+NOMINATIM_URL=https://nominatim.openstreetmap.org/  # explicit backend choice
 OSM_RESPONSE_MODE=compact               # compact | detailed
 OSM_UPSTREAM_TOOL_DEADLINE_SECONDS=16    # end-to-end upstream tool limit (max 16)
 
@@ -256,18 +258,30 @@ All three are read-only and safe to call repeatedly from an orchestrator.
 
 ### Rate limiting (Nominatim)
 
-Nominatim's usage policy allows **at most 1 request per second** per agent.
-The server enforces this with an `asyncio.Lock` + token-bucket:
+The [public Nominatim policy](https://operations.osmfoundation.org/policies/nominatim/)
+limits the entire application to **at most 1 request per second**, not each
+agent. Select it deliberately with `NOMINATIM_URL`; startup fails if no backend
+is selected. It has limited capacity and no service-level guarantee.
 
 ```bash
-OSM_NOMINATIM_RATE_LIMIT_RPS=1.0   # tokens per second
-OSM_NOMINATIM_RATE_LIMIT_BURST=2   # initial bucket capacity
+OSM_NOMINATIM_RATE_LIMIT_RPS=1.0
+OSM_NOMINATIM_RATE_LIMIT_BURST=1
 ```
 
-Setting `OSM_NOMINATIM_RATE_LIMIT_RPS=0` disables the limiter entirely
-(use only for self-hosted Nominatim). Concurrent calls for the same
-target collapse through a **single-flight** future so parallel tools
-never stampede the upstream API.
+For the public service, disabling the rate limit, exceeding 1 req/s or using
+burst greater than 1 is rejected. Identical concurrent calls coalesce, and
+Nominatim and Overpass have shared per-process concurrency and cooldowns.
+Different processes, managers and replicas do not share this state: use one
+shared gateway or another backend to enforce the application-wide budget.
+For custom backends configure the endpoint, host allowlist, rate and burst
+explicitly according to their terms; this client is conservative and sends
+requests without bursts.
+
+The public service forbids autocomplete and systematic collection, including
+grid reverse geocoding and downloading complete POI lists. Its LLM section
+restricts generic offerings and requires a deliberate informed developer
+decision; review the policy before use. Do not send personal or confidential
+data to the public service. Display OpenStreetMap attribution as appropriate.
 
 ### Performance / hardening knobs
 
@@ -299,6 +313,7 @@ python /home/bill/Projects/nanobot/scripts/percival-docker-build.py osm --dev-al
 # client of your choice under ``mcpServers.percival-osm`` — see the
 # per-client snippets below.
 docker run --rm -i --init \
+  -e NOMINATIM_URL='https://nominatim.openstreetmap.org/' \
   -e USER_AGENT='percival-osm/0.4.1 (you@example.com)' \
   -e FROM_HEADER='you@example.com' \
   percival-osm:dev
@@ -332,8 +347,8 @@ docker mcp catalog import $PWD/servers/percival-osm/catalog.yaml
 docker mcp server enable percival-osm
 ```
 
-The catalog entry declares the two mandatory env vars
-(`USER_AGENT`, `FROM_HEADER`) and the optional `ORS_API_KEY` as
+The catalog entry declares the mandatory `NOMINATIM_URL`, `USER_AGENT` and
+`FROM_HEADER`, and the optional `ORS_API_KEY` as
 configurable UI fields, so operators don't need to edit a `.env`.
 
 ### Wiring into specific MCP clients
@@ -348,6 +363,7 @@ configurable UI fields, so operators don't need to edit a `.env`.
         "command": "docker",
         "args": [
           "run", "--rm", "-i",
+          "-e", "NOMINATIM_URL=https://nominatim.openstreetmap.org/",
           "-e", "USER_AGENT=percival-osm/0.4.1 (you@example.com)",
           "-e", "FROM_HEADER=you@example.com",
           "-e", "ORS_API_KEY=${OPENROUTESERVICE_API_KEY}",
@@ -368,6 +384,7 @@ configurable UI fields, so operators don't need to edit a `.env`.
       "type": "stdio",
       "command": [
         "docker", "run", "--rm", "-i",
+        "-e", "NOMINATIM_URL=https://nominatim.openstreetmap.org/",
         "-e", "USER_AGENT=percival-osm/0.4.1 (you@example.com)",
         "-e", "FROM_HEADER=you@example.com",
         "percival-osm:dev"
@@ -483,7 +500,7 @@ form):
 | Transport | HTTPS-only to upstreams; `follow_redirects=false` by default |
 | URL policy | Allow-list of upstream hosts; `inline_credentials` rejected |
 | Headers | `User-Agent` + `From` headers mandatory; requests fail loud if missing |
-| Rate limit | 1 req/s + burst 2 against Nominatim via token bucket |
+| Rate limit | Public Nominatim: at most 1 req/s, no burst, one concurrent request per process |
 | Single-flight | Concurrent duplicate calls share one upstream request |
 | Sanitization | All upstream-rendered text goes through `sanitize_external_text` / `sanitize_external_markdown` |
 | Cache | File must live under `OSM_CACHE_ALLOWED_DIRS`; TTL configurable |
@@ -498,6 +515,8 @@ Every blocking or failure path increments a counter exposed via
 ## 📝 Changelog
 
 ### Unreleased
+- Require explicit `NOMINATIM_URL` selection; enforce shared in-process
+  provider budgets, coalescing and cooldowns, and bounded Overpass work.
 - Default MCP exposure reduced to eight curated tools using the
   `OSM_EXPOSED_TOOLS` allowlist. All prior handlers and category aliases remain
   implemented and can be explicitly re-enabled.

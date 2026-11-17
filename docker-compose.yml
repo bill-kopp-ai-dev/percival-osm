@@ -49,7 +49,7 @@ x-base-config: &base-config
   environment: &base-environment
     OSM_CACHE_FILE: /cache/osm-cache.json
     OSM_CACHE_ALLOWED_DIRS: /cache
-    NOMINATIM_URL: ${NOMINATIM_URL:-https://nominatim.openstreetmap.org/}
+    NOMINATIM_URL: ${NOMINATIM_URL:-}
     OVERPASS_TURBO_URL: ${OVERPASS_TURBO_URL:-https://overpass-api.de/api/interpreter}
     INSTRUCTION_ORIENTED_INTERPRETATION: ${INSTRUCTION_ORIENTED_INTERPRETATION:-true}
     CAR_ONLY: ${CAR_ONLY:-false}
@@ -78,7 +78,7 @@ x-base-config: &base-config
     OSM_REQUIRE_HTTPS_UPSTREAMS: ${OSM_REQUIRE_HTTPS_UPSTREAMS:-true}
     OSM_UPSTREAM_ALLOWED_HOSTS: ${OSM_UPSTREAM_ALLOWED_HOSTS:-nominatim.openstreetmap.org,overpass-api.de,api.heigit.org}
     OSM_NOMINATIM_RATE_LIMIT_RPS: ${OSM_NOMINATIM_RATE_LIMIT_RPS:-1.0}
-    OSM_NOMINATIM_RATE_LIMIT_BURST: ${OSM_NOMINATIM_RATE_LIMIT_BURST:-2}
+    OSM_NOMINATIM_RATE_LIMIT_BURST: ${OSM_NOMINATIM_RATE_LIMIT_BURST:-1}
 
 services:
   # ---------------------------------------------------------------------------

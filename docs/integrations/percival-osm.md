@@ -13,7 +13,17 @@
 
 ## Upstreams e respostas
 
-- Nominatim: `https://nominatim.openstreetmap.org/`.
+- Backend escolhido por Bill para uso individual: definir explicitamente
+  `NOMINATIM_URL=https://nominatim.openstreetmap.org/` no manager ao integrar
+  uma versão com F4. A seleção em código não altera a configuração do runtime.
+- O limite de 1 req/s sem burst é por aplicação, não por processo. Para dois
+  managers ou réplicas compartilharem o serviço público, usar um único gateway
+  que imponha o orçamento agregado, ou escolher outro backend. Um limiter local
+  por processo não coordena gestores.
+- Aplicam-se a [política pública](https://operations.osmfoundation.org/policies/nominatim/),
+  inclusive suas restrições para LLMs, proibição de autocomplete e coleta
+  sistemática, identificação e atribuição. Não enviar dados pessoais ou
+  confidenciais; não há garantia de disponibilidade.
 - Overpass: `https://overpass-api.de/api/interpreter`.
 - OpenRouteService: `https://api.heigit.org/openrouteservice`, quando configurado.
 - O perfil local permite esses hosts pela allowlist; upstreams exigem HTTPS e

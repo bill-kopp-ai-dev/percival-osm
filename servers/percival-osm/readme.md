@@ -33,6 +33,8 @@ and `radius=1000`.
 
 Two environment variables are mandatory (OSM Nominatim usage policy):
 
+- `NOMINATIM_URL` — explicit geocoding backend. For the public service, review
+  https://operations.osmfoundation.org/policies/nominatim/ before selection.
 - `USER_AGENT` — outgoing User-Agent header, e.g. `my-agent/1.0 (you@example.com)`.
 - `FROM_HEADER` — contact email in the From header.
 
