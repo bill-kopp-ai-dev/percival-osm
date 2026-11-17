@@ -1,8 +1,10 @@
 # Issue: chamadas MCP não aparecem nas métricas operacionais
 
-- **Status:** corrigida e validada; candidata combinada pinada no runtime MCP
+- **Status:** fechada — corrigida, validada na suíte e confirmada no runtime MCP
 - **Prioridade sugerida:** P2 — observabilidade operacional
 - **Identificada em:** 2026-10-31, validação pós-deploy da superfície reduzida de tools
+- **Fechada em:** 2026-11-16, auditoria documental sobre o estado real do código
+- **Owner / decisão:** Bill Kopp
 
 ## Problema
 
@@ -59,11 +61,11 @@ usada nos demais handlers canônicos expostos.
 
 ## Próximo passo
 
-Após revisão/commit das alterações, construir uma imagem com revisão OCI
-rastreável e, com autorização explícita para a mudança de deploy, atualizar o
-pin Percival. A imagem local de validação desta execução foi construída a partir
-de worktree ainda não commitado e está marcada `revision=unknown`; não deve ser
-tratada como artefato de release.
+Nenhum. A correção foi commitada em `9b8dc4b` (`fix(mcp): track calls and bound
+upstream tool responses`) e a imagem candidata foi pinada por Bill no runtime
+MCP. A ressalva histórica de traceability OCI permanece registrada abaixo: a
+primeira imagem local foi construída a partir de worktree não commitado e
+carrega `revision=unknown`; não deve ser tratada como artefato de release.
 
 ## Resultado da correção — 2026-10-31
 
@@ -84,3 +86,26 @@ tratada como artefato de release.
   como `sha256:67cbd63c83a231e5a98cb9a12ae28de115a8685dc906ba2d9eb320270d2ae5ff`.
   O reteste real confirmou `tool_calls` para a busca e health após o pin. OCI
   revision permanece `unknown` por ter sido construída de worktree não commitado.
+
+## Verificação de auditoria — 2026-11-16
+
+- O defeito não existe mais no código. Em `src/percival_osm_mcp/server.py` a
+  ordem dos decorators é `@_conditionally_register_tool(...)` sobre
+  `@_track(...)` (linhas 3449 e seguintes), de modo que o FastMCP recebe o
+  callback já instrumentado — a ordem invertida que causava o defeito não
+  existe mais.
+- `record_tool_error()` (linha 684) contabiliza apenas o erro de uma chamada já
+  contada; `record_tool_call(..., error=True)` permanece disponível para
+  chamadores que registram invocação e erro juntos.
+- Superfície padrão reconfirmada no código: `OSM_EXPOSED_TOOLS` tem como padrão
+  as mesmas oito ferramentas, e a listagem efetiva retornou exatamente
+  `osm_directions`, `osm_find_address`, `osm_find_nearby`, `osm_find_place`,
+  `osm_geocode`, `osm_get_health`, `osm_get_security_metrics`,
+  `osm_get_version`.
+- Suíte completa: `100 passed`. Os testes que exercitam os callbacks registrados
+  no FastMCP, o erro síncrono/assíncrono e a contagem isolada por alias
+  continuam presentes e verdes.
+- Ressalva de ambiente registrada em
+  `docs/issues/2026-11-16-cache-persist-failure-escapes-as-raw-exception.md`:
+  com `/tmp` somente-leitura a suíte pendura, por um defeito adjacente de
+  cache, não por este tracking.

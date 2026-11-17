@@ -1,6 +1,7 @@
 # Percival OSM tool-surface deployment
 
-- **Status:** deployed to local Percival manager and superseded image removed
+- **Status:** deployed to local Percival manager and superseded image removed —
+  **closed** (audited 2026-11-16)
 - **Owner / decision-maker:** Bill Kopp
 - **Request:** deploy the reduced tool surface to the local Percival OSM MCP and
   remove superseded Percival OSM images afterward.
@@ -103,3 +104,30 @@ recovery.
   with a smaller bounded query if another attempt is approved. To test routing,
   configure `ORS_API_KEY` through the supported Percival interface and then
   exercise `osm_directions`; do not send the key in chat.
+
+## Audit verification — 2026-11-16
+
+- This plan records a completed deployment operation against the local Percival
+  manager. The audit did not re-run any manager mutation, image build, removal
+  or pin change; the before/after evidence below is the one recorded at
+  execution time and was not reproduced.
+- The follow-up recorded at the end of the previous section was **closed on
+  2026-10-31**: the tracking defect was fixed in commit `9b8dc4b` and the
+  end-to-end deadline in the same commit. See
+  `docs/plans/closed/2026-10-31-tool-call-metrics-fix.md`,
+  `docs/plans/closed/2026-10-31-mcp-upstream-deadline.md` and the corresponding
+  closed issues.
+- Consequently, the "empty `tool_calls`" symptom observed in the
+  post-deployment functional test belongs to the pre-fix candidate B and no
+  longer describes the current code. The current default surface is still the
+  same eight tools, and the counters now record one call per invocation.
+- Two items from that functional test were **not** closed and remain tracked
+  elsewhere: routing could not be exercised because `ORS_API_KEY` was not
+  configured (`provider_not_configured` is the expected response and the
+  endpoint migration is tracked in
+  `docs/issues/2026-11-04-ors-api-endpoint-migration.md`), and the
+  per-tool/status outcome metric is tracked in
+  `docs/issues/2026-10-31-controlled-tool-failure-outcomes-not-counted.md`.
+- The removal of image A in this plan is irreversible and was explicitly
+  authorized by the owner after being informed that it eliminates the local
+  rollback for that image ID. Nothing in the audit restores it.

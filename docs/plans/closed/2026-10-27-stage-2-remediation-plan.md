@@ -1,7 +1,11 @@
 # Stage-2 — Remediação do Percival OSM MCP
 
-**Data / revisão:** 2026-10-31 / 1.4 (emissão original: 2026-10-27 / 1.0).
-**ID / estado:** S2-OS / 13/13 ações técnicas qualificadas localmente. A-013 repinado e verificado nos dois gestores; Bill autorizou remover a imagem anterior, então não há rollback local para o pin Percival. Distribuição externa não integra este escopo.
+**Data / revisão:** 2026-11-16 / 1.5 (emissão original: 2026-10-27 / 1.0;
+revisões anteriores: 2026-10-31 / 1.4).
+**ID / estado:** S2-OS / 13/13 ações técnicas qualificadas localmente. **Plano
+concluído e fechado.** A-013 repinado e verificado nos dois gestores; Bill
+autorizou remover a imagem anterior, então não há rollback local para o pin
+Percival. Distribuição externa não integra este escopo.
 **Checkout executor:** `/home/bill/Projects/percival-osm`.  
 **Owner e decisor único do produto e da infraestrutura IaC:** Bill Kopp,
 Positronic Bean Labs (`bill.kopp.dev@gmail.com`).
@@ -13,17 +17,17 @@ etapa de aprovação adicional.
 ## 1. Objetivo e fontes
 
 Tratar os 13 achados da **seção 6** do
-[relatório OSM](../../../positronic-bean-IaC/docs/reports/2026-10-27-percival-osm-iac-readiness-report.md#6-achados-issues-e-inconsistências),
+[relatório OSM](../../../../positronic-bean-IaC/docs/reports/2026-10-27-percival-osm-iac-readiness-report.md#6-achados-issues-e-inconsistências),
 com ações e revalidação das seções 7/9: 13 ações (2 P1, 4 P2, 7 P3), sem P0.
 Baseline e HEAD na emissão: `06484259a3bb5371c5c1551dcab0c23ccc166479`.
 Há exclusões documentais locais preexistentes em `docs/`, incluindo segurança,
 deployment e nota F3; preservá-las. `R-05` definiu `pblabs-mcp-index` como
 tracker F3 canônico por image ID; não restaurar uma cópia local concorrente.
 
-[Coordenador stage-2](../../../positronic-bean-IaC/docs/plans/2026-10-27-iac-v1-stage-2-remediation-plan.md)
+[Coordenador stage-2](../../../../positronic-bean-IaC/docs/plans/2026-10-27-iac-v1-stage-2-remediation-plan.md)
 — retorno S2-OS, seções 3 e 7. Fontes comuns:
-[consolidação](../../../positronic-bean-IaC/docs/reports/2026-10-26-stage-1-consolidated-readiness-report.md)
-e [D-01..D-06](../../../positronic-bean-IaC/docs/decisions/2026-10-27-iac-stage-1-scope-and-pilot-decisions.md).
+[consolidação](../../../../positronic-bean-IaC/docs/reports/2026-10-26-stage-1-consolidated-readiness-report.md)
+e [D-01..D-06](../../../../positronic-bean-IaC/docs/decisions/2026-10-27-iac-stage-1-scope-and-pilot-decisions.md).
 
 Emissão documental; execução futura local. Cada aceite deve ter a evidência
 técnica suficiente para o risco daquela ação; não repetir validações nem exigir
@@ -203,7 +207,54 @@ reportar apenas o que foi efetivamente verificado.
 
 ## 7. Sincronização com o plano coordenador
 
-Atualizar o [stage-2 geral](../../../positronic-bean-IaC/docs/plans/2026-10-27-iac-v1-stage-2-remediation-plan.md)
+Atualizar o [stage-2 geral](../../../../positronic-bean-IaC/docs/plans/2026-10-27-iac-v1-stage-2-remediation-plan.md)
 se essa sincronização estiver no escopo e o checkout IaC estiver disponível.
 Registrar um resumo de status e dependências; não bloquear a conclusão local por
 retorno, aceite ou aprovação duplicada de outro participante.
+
+## 8. Verificação de auditoria — 2026-11-16
+
+Revisão documental do plano contra o estado real do código deste checkout. Não
+houve mutação de runtime, de registry ou de imagem nesta auditoria.
+
+### Ações reconfirmadas no código
+
+| Ação | Evidência no código em 2026-11-16 |
+|---|---|
+| A-001 | Sem `ORS_API_KEY`, `OrsRouter.__init__` deixa o cliente `None` e as tools de rota respondem `provider_not_configured` (`src/percival_osm_mcp/server.py:1714, 3167, 3293`). Não há distância haversine apresentada como rota. |
+| A-002 | Resposta 200 vazia vira `no_results`; indisponibilidade, 429/5xx e URL bloqueada viram erro explícito. Regressões em `tests/test_s4_new_tools.py::test_nearby_search_distinguishes_empty_provider_response_from_failure` e `::test_empty_overpass_response_is_no_results_and_failure_is_upstream_error`. |
+| A-003 | `http_follow_redirects` tem padrão `False` (`src/percival_osm_mcp/server.py:129`) e cada destino de redirect passa por `validate_upstream_url_policy` antes de qualquer requisição (linha 1957). |
+| A-004 | Normalização de timestamps/metadata permanece no build (`scripts/normalize_venv_metadata.py` e camadas de normalização no Dockerfile); comparação de builds idênticos já registrada em 2026-10-31T12:01Z. |
+| A-005 | `SERVER_VERSION` vem de `package_version("percival-osm")` e é injetado em `mcp._mcp_server.version` (`src/percival_osm_mcp/server.py:387, 390`). |
+| A-006 | O wrapper de build continua passando `VERSION`/`GIT_SHA` como build args (`scripts/docker-build.sh`). |
+| A-007 | Aliases capturam `category_key`/`tool_name` por valor no default do handler (`src/percival_osm_mcp/server.py:3933`). Regressão em `tests/test_s5_primitives.py::test_legacy_aliases_increment_only_the_called_alias`. |
+| A-008 | A nota versionada de integração existe em `docs/integrations/percival-osm.md`. |
+| A-009 | `validate_upstream_runtime_configuration` rejeita `NOMINATIM_URL` terminada em `/search` (`src/percival_osm_mcp/server.py:794`). |
+| A-010 | Bounding box do Nominatim é validado quanto a presença, tamanho, conversão e finitude antes do uso (`src/percival_osm_mcp/server.py:2708`). |
+| A-011 | Evidência externa (scan Trivy ligado ao image ID no tracker canônico `pblabs-mcp-index`); não reexecutada nesta auditoria, por estar fora deste checkout. |
+| A-012 | Shutdown observável no modo HTTP: uvicorn com `timeout_graceful_shutdown=SHUTDOWN_DRAIN_TIMEOUT_SECONDS` (`src/percival_osm_mcp/server.py:970`) e o smoke test exige exit 143 e log `Application shutdown complete.` (`scripts/docker-smoke-test.sh:197-207`). |
+| A-013 | Evidência externa (inventário e repin nos dois gestores); não reexecutada nesta auditoria, por estar fora deste checkout. |
+
+### Suíte
+
+- `./.venv/bin/python -m pytest` → `100 passed`.
+- Ressalva de ambiente: neste sandbox `/tmp` é somente-leitura e os fixtures de
+  teste usam `/tmp/osm-cache.json` de forma fixa. Com o cache redirecionado para
+  um diretório gravável a suíte passa integralmente; com `/tmp` somente-leitura
+  ela **pendura**, por um defeito adjacente de cache registrado em
+  `docs/issues/2026-11-16-cache-persist-failure-escapes-as-raw-exception.md`.
+  O plano permanece concluído: a pendência é um achado novo, não uma ação
+  stage-2 reaberta.
+
+### Encerramento
+
+- Nenhuma das 13 ações requer reabertura. Ações cujo acceptance depende de
+  outro checkout (A-011, A-013) mantêm a evidência registrada em 2026-10-31 e
+  não foram re-verificadas aqui.
+- Pendências herdadas, fora do escopo deste plano e já rastreadas: migração do
+  endpoint ORS
+  (`docs/issues/2026-11-04-ors-api-endpoint-migration.md`), métrica agregada
+  por tool/status
+  (`docs/issues/2026-10-31-controlled-tool-failure-outcomes-not-counted.md`) e
+  robustez do cache
+  (`docs/issues/2026-11-16-cache-persist-failure-escapes-as-raw-exception.md`).

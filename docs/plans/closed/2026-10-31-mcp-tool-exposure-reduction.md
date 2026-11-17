@@ -1,6 +1,6 @@
 # MCP tool exposure reduction
 
-- **Status:** implemented and verified locally
+- **Status:** implemented and verified locally — **closed** (audited 2026-11-16)
 - **Owner / decision-maker:** Bill Kopp
 - **Scope:** reduce the default MCP `tools/list` surface from 37 to 8 tools while
   retaining every existing implementation for explicit future reactivation.
@@ -79,3 +79,27 @@ source refactor.
 - This changes the local source/configuration only. The already running Percival
   MCP deployment has not been rebuilt or changed and will continue to report its
   current tool list until a separately authorized image update/re-pin.
+
+## Audit verification — 2026-11-16
+
+- Default surface reconfirmed at runtime: `mcp.list_tools()` returns exactly
+  `osm_directions`, `osm_find_address`, `osm_find_nearby`, `osm_find_place`,
+  `osm_geocode`, `osm_get_health`, `osm_get_security_metrics`,
+  `osm_get_version` — 8 tools, matching
+  `Settings.exposed_tools` (`src/percival_osm_mcp/server.py:191`).
+- `OSM_EXPOSED_TOOLS=all` with legacy aliases enabled returns 37 tools, as
+  specified in the acceptance criteria.
+- Inventory reconfirmed: 14 canonical handlers (`CANONICAL_TOOL_NAMES`) and 23
+  category aliases (`LEGACY_CATEGORY_ALIASES`) remain in source; no handler was
+  deleted.
+- Alias gating reconfirmed: the alias registration block is skipped entirely
+  when `OSM_EXPOSE_LEGACY_ALIASES=false`, and each alias is additionally
+  filtered by `_tool_is_exposed` (`src/percival_osm_mcp/server.py:3925-3944`).
+- Invalid exposure configuration still fails fast:
+  `validate_tool_exposure_configuration()` raises `ValueError` for an empty
+  allowlist, for `all` combined with explicit names, and for unknown tool
+  names (`src/percival_osm_mcp/server.py:432-447`).
+- Full suite: `100 passed`.
+- Note on the deployment follow-up: the eight-tool surface was deployed to the
+  local Percival manager in the campaign recorded in
+  `docs/plans/closed/2026-10-31-percival-osm-tool-surface-deployment.md`.

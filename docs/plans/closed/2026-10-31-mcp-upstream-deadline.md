@@ -1,8 +1,9 @@
 # MCP upstream deadline implementation plan
 
 - **Status:** implemented, locally validated, and confirmed in managed MCP runtime
+  — **closed** (audited 2026-11-16)
 - **Owner / decision-maker:** Bill Kopp
-- **Issue:** `docs/issues/2026-10-31-mcp-upstream-deadline-exceeds-client-timeout.md`
+- **Issue:** `docs/issues/closed/2026-10-31-mcp-upstream-deadline-exceeds-client-timeout.md`
 - **Decision:** Enforce a configurable end-to-end deadline on all tracked tools
   that perform upstream requests. Use 16 seconds by default and as the maximum,
   leaving 14 seconds against the observed 30-second MCP client timeout. The
@@ -105,3 +106,28 @@ deliver an error response before the client timeout.
 - `tool_errors` remained empty by design. A separate issue now tracks an
   aggregate per-tool/status outcome metric so dashboards need not rely only on
   propagated exceptions.
+
+## Audit verification — 2026-11-16
+
+- The decision is implemented as written: `Settings.upstream_tool_deadline_seconds`
+  defaults to `16.0` with validation `gt=0, le=16.0`
+  (`src/percival_osm_mcp/server.py:120`), so 16 s is simultaneously the default
+  and the accepted maximum, as required by the plan.
+- The deadline is applied end-to-end at the tracked-tool wrapper
+  (`_track`, `src/percival_osm_mcp/server.py:3387`) for the seven upstream
+  tools, and at the nearby-search boundary
+  (`_search_nearby_with_deadline`, `src/percival_osm_mcp/server.py:2954`) so the
+  structured `upstream_error` payload can be returned.
+- Cancellation cleanup remains bounded: `OsmSearcher.aclose(cancel_pending=True)`
+  caps the HTTP client close with `CANCELLATION_CLEANUP_TIMEOUT_SECONDS`
+  (`src/percival_osm_mcp/server.py:1896-1904`).
+- Sanitized provider HTTP status summaries are still retained in
+  `last_upstream_failure` without URL or payload
+  (`_upstream_error_summary`, `src/percival_osm_mcp/server.py:226`).
+- Regressions present and green: deadline setting bounds, nearby compact and
+  detailed variants, the real FastMCP callback over a delayed Overpass fixture,
+  bounded cleanup, call counting, and the `HTTP 503` diagnostic in
+  `tests/test_s4_new_tools.py`.
+- Full suite: `100 passed`.
+- Known limitation carried over, unchanged: the 30-second transport limit was
+  observed on one client and is not a guarantee for every MCP consumer.

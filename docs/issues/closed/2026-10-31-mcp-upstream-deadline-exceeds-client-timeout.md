@@ -1,8 +1,9 @@
 # Issue: prazo upstream pode exceder o timeout do cliente MCP
 
-- **Status:** resolvida e confirmada no runtime MCP — 2026-10-31
+- **Status:** fechada — resolvida e confirmada no runtime MCP (reteste de 2026-10-31)
 - **Prioridade sugerida:** P2 — confiabilidade e diagnóstico operacional
 - **Identificada em:** 2026-10-31, teste funcional pós-pin do servidor `osm`
+- **Fechada em:** 2026-11-16, auditoria documental sobre o estado real do código
 - **Owner / decisão:** Bill Kopp
 
 ## Problema
@@ -96,7 +97,7 @@ perdida após o prazo. Ela foi adicionada durante a implementação descrita aba
 - A primeira candidata usou `OSM_UPSTREAM_TOOL_DEADLINE_SECONDS=24`. No teste MCP
   real, o timeout interno foi registrado após 25,44 s, mas o cliente ainda
   estourou seu limite de 30 s sem receber JSON. A margem de 6 s foi insuficiente.
-- Revisto para default e máximo de 16 s, intervalo `(0, 16]`, deixando 14 s de
+- Revisado para default e máximo de 16 s, intervalo `(0, 16]`, deixando 14 s de
   margem ao cliente observado.
 - Todas as tools assíncronas instrumentadas que fazem chamadas upstream usam o
   prazo end-to-end; busca próxima também o aplica no limite compartilhado para
@@ -124,12 +125,9 @@ perdida após o prazo. Ela foi adicionada durante a implementação descrita aba
   foi construída como `percival-osm:deadline-local`, hash
   `sha256:67cbd63c83a231e5a98cb9a12ae28de115a8685dc906ba2d9eb320270d2ae5ff`;
   Docker smoke passou.
-- **Reteste MCP real:** Bill pinou a imagem revisada acima. Para MASP, uma
-  chamada única retornou ao cliente `status=upstream_error` e a mensagem
-  `Nearby search exceeded its execution deadline; retry later.`. O health
-  registrou `NearbySearch / end-to-end deadline exceeded after 16s` e
-  `tool_calls.osm_find_nearby=1`. O cliente recebeu o payload antes do limite de
-  30 s; portanto o caminho de timeout está confirmado no runtime MCP.
+- **Reteste MCP real:** Bill pinou a imagem revisada acima; o cliente recebeu o
+  payload controlado antes do limite de 30 s. Detalhes e health pós-reteste
+  estão na seção "Reteste MCP real — candidata de 16 s".
 - A busca não retornou POIs; esse teste valida entrega do erro controlado, não
   uma busca bem-sucedida. A reprodução anterior com a candidata de 24 s falhou
   em entregar o payload; a margem e o limite de cleanup foram reduzidos antes
@@ -142,7 +140,11 @@ perdida após o prazo. Ela foi adicionada durante a implementação descrita aba
   todos os consumidores MCP. A imagem foi pinada pelo operador; esta alteração
   não publicou nem enviou a imagem a um registry.
 
-## Reteste MCP real — 2026-10-31
+## Primeiro reteste MCP real (candidata de 24 s) — 2026-10-31
+
+Este registro é o **primeiro** dos dois retestes; o segundo, com a candidata
+revisada de 16 s, está em "Reteste MCP real — candidata de 16 s" abaixo e
+encerrou a issue.
 
 - Imagem testada: `sha256:a8df6ec22f69aeae3c27d1eb61e915e475d45da98fe610bb256626e65b31ed54`.
 - `osm_find_nearby` para MASP levou o cliente a retornar
@@ -153,5 +155,41 @@ perdida após o prazo. Ela foi adicionada durante a implementação descrita aba
   resposta controlada, não numa exceção Python propagada. Não é critério de
   sucesso ou causa demonstrada da resposta perdida.
 - O atraso pode estar no cancelamento/fechamento após o registro ou na entrega do
-  transporte; o dado disponível não identifica a etapa exata. A issue fica
-  **aberta** até um reteste no runtime MCP com a nova candidata.
+  transporte; o dado disponível não identifica a etapa exata. A issue permaneceu
+  **aberta** até o reteste com a candidata revisada.
+
+## Reteste MCP real — candidata de 16 s — 2026-10-31
+
+- Bill pinou a candidata revisada
+  `sha256:67cbd63c83a231e5a98cb9a12ae28de115a8685dc906ba2d9eb320270d2ae5ff`
+  no runtime MCP.
+- Uma chamada única de `osm_find_nearby` para MASP retornou ao cliente
+  `status=upstream_error` com a mensagem
+  `Nearby search exceeded its execution deadline; retry later.`, dentro do
+  limite de 30 s do cliente.
+- O health registrou `tool_calls.osm_find_nearby=1` e
+  `last_upstream_failure.kind=NearbySearch` com `end-to-end deadline exceeded
+  after 16s`; `tool_errors` permaneceu vazio, conforme o contrato.
+- O caminho de timeout está confirmado no runtime MCP: a issue fica **fechada**.
+
+## Verificação de auditoria — 2026-11-16
+
+- O código entrega o que a issue exigia. `Settings.upstream_tool_deadline_seconds`
+  (`src/percival_osm_mcp/server.py:120`) tem padrão `16.0` com validação
+  `gt=0, le=16.0`; o wrapper `_track` (linha 3387) aplica `asyncio.timeout`
+  end-to-end às sete ferramentas upstream; `_search_nearby_with_deadline` (linha
+  2954) devolve o payload estruturado `upstream_error` da busca próxima.
+- A regressão que valida a entrega do payload ao chamador através do callback
+  real do FastMCP segue presente
+  (`tests/test_s4_new_tools.py::test_registered_nearby_timeout_reaches_mcp_caller`),
+  junto das variantes de deadline, validação de setting, cancelamento/fechamento
+  e diagnóstico `HTTP 503`.
+- Suíte completa: `100 passed`.
+- Contradição interna removida: as versões anteriores deste documento traziam a
+  seção do primeiro reteste (candidata de 24 s) abaixo da resolução e
+  concluíam que a issue seguia aberta. A cronologia correta é 24 s → falha de
+  entrega → revisão para 16 s → reteste aprovado.
+- Pendência herdada e não bloqueante: o limite de 30 s foi observado em um
+  cliente, não é garantia para todos os consumidores MCP; e a métrica agregada
+  por tool/status continua pendente em
+  `docs/issues/2026-10-31-controlled-tool-failure-outcomes-not-counted.md`.

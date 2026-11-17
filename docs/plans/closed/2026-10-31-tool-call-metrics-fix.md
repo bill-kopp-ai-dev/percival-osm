@@ -1,8 +1,9 @@
 # Tool call metrics fix
 
-- **Status:** implemented, locally validated, and included in operator-pinned MCP image
+- **Status:** implemented, locally validated, and included in operator-pinned MCP
+  image — **closed** (audited 2026-11-16)
 - **Owner / decision-maker:** Bill Kopp
-- **Issue:** `docs/issues/2026-10-31-mcp-tool-call-metrics-not-recorded.md`
+- **Issue:** `docs/issues/closed/2026-10-31-mcp-tool-call-metrics-not-recorded.md`
 - **Outcome:** FastMCP-invoked tools report one call each, and propagated
   exceptions increment the matching error counter without incrementing calls
   a second time.
@@ -78,3 +79,28 @@ updates.
   OCI revision remains `unknown` because the image was built before commit.
 - A future release should use a clean, committed source revision for OCI
   traceability.
+
+## Audit verification — 2026-11-16
+
+- The fix is present in the committed code: the canonical decorators are
+  ordered `@_conditionally_register_tool(...)` over `@_track(...)`
+  (`src/percival_osm_mcp/server.py:3449` and following), so FastMCP registers
+  the already-instrumented callback. The original defect — registering the
+  untracked handler and only wrapping the module-level reference — no longer
+  exists.
+- The error-only counter exists as planned: `record_tool_error()`
+  (`src/percival_osm_mcp/server.py:684`) increments only the error counter, and
+  `record_tool_call(..., error=True)` is retained for callers that record an
+  invocation and its error together.
+- Legacy aliases are tracked under their own alias name and no longer increment
+  counters manually (`src/percival_osm_mcp/server.py:3941`).
+- The textual decorator-order assertion was replaced by real FastMCP callback
+  execution, and the `scripts/docker-ci-conformance.py` extension that asserts
+  one version call and one health call over a single stdio session is still in
+  the repository.
+- Full suite: `100 passed`.
+- Traceability caveat, now partially resolved: the source is committed
+  (`9b8dc4b`), so a subsequent image can carry a real OCI revision label. The
+  images pinned in the runtime during these campaigns were built from an
+  uncommitted worktree and still report `revision=unknown`; that caveat applies
+  to those historical artifacts only.
