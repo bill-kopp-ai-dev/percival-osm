@@ -1,6 +1,6 @@
 # Percival OSM — perfil de integração
 
-**Revisado:** 2026-10-31
+**Revisado:** 2026-11-17
 **Owner:** Bill Kopp, Positronic Bean Labs
 
 ## Identidade e processo
@@ -15,9 +15,12 @@
 
 - Nominatim: `https://nominatim.openstreetmap.org/`.
 - Overpass: `https://overpass-api.de/api/interpreter`.
-- OpenRouteService: `https://api.openrouteservice.org`, quando configurado.
+- OpenRouteService: `https://api.heigit.org/openrouteservice`, quando configurado.
 - O perfil local permite esses hosts pela allowlist; upstreams exigem HTTPS e
   redirects ficam desativados no cliente/configuração efetiva padrão.
+- `ORS_INSTANCE` (alias de compatibilidade: `ORS_URL`) substitui a base URL; o
+  prefixo do serviço deve ser preservado. Compose encaminha ambos os nomes para
+  a configuração canônica `ORS_INSTANCE`.
 - Sem `ORS_API_KEY`, navegação e direções respondem
   `provider_not_configured`; distância haversine não é apresentada como rota.
 - Uma resposta válida vazia retorna `no_results`; indisponibilidade, timeout,

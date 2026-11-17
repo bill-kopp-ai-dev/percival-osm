@@ -207,9 +207,13 @@ OSM_LOG_LEVEL=INFO                      # DEBUG | INFO | WARNING | ERROR
 
 # Security
 OSM_REQUIRE_HTTPS_UPSTREAMS=true
-OSM_UPSTREAM_ALLOWED_HOSTS=nominatim.openstreetmap.org,overpass-api.de,api.openrouteservice.org
+OSM_UPSTREAM_ALLOWED_HOSTS=nominatim.openstreetmap.org,overpass-api.de,api.heigit.org
 OSM_HTTP_FOLLOW_REDIRECTS=false         # avoids SSRF via redirect
 MCP_OSM_AUTH_TOKEN=…                    # required by the authenticated Compose HTTP profile
+
+# ORS defaults to https://api.heigit.org/openrouteservice. Set ORS_INSTANCE
+# (or legacy alias ORS_URL) to an explicitly allowlisted compatible instance.
+ORS_INSTANCE=https://api.heigit.org/openrouteservice
 
 # Cache
 OSM_CACHE_FILE=/tmp/osm-cache.json

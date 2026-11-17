@@ -1,6 +1,6 @@
 # Issue: migrar o endpoint legado do OpenRouteService
 
-- **Status:** aberta
+- **Status:** aberta — implementação ORS feita; conclusão F1 aguarda verificação Python 3.11
 - **Prioridade sugerida:** P1 — compatibilidade das rotas com endpoint descontinuado
 - **Identificada em:** 2026-11-04, revisão do runtime `osm` após falha de rota
 - **Verificada em:** 2026-11-16, auditoria documental sobre o estado real do código
@@ -112,4 +112,25 @@ conforme o novo endpoint documentado pelo provedor.
   A migração de base URL não exige mudar para o envelope GeoJSON.
 - O anúncio oficial de migração e o cronograma foram consultados novamente em
   2026-11-16; a disponibilidade do hostname legado continua sem teste direto.
-- Issue permanece aberta até implementação e verificação.
+- Na revisão de 2026-11-16, a issue permanecia aberta até implementação e
+  verificação.
+
+## Implementação parcial e verificação — 2026-11-17
+
+- Fallback atualizado para `https://api.heigit.org/openrouteservice`, removendo
+  barras finais redundantes sem descartar prefixo de instância; allowlist padrão
+  e fixtures agora usam `api.heigit.org`. `ORS_INSTANCE` e o alias `ORS_URL`
+  continuam aceitos e passam pela mesma validação de HTTPS/allowlist.
+- Compose encaminha `ORS_INSTANCE` com fallback para `ORS_URL`; exemplos,
+  README, nota de integração e brief do projeto foram alinhados.
+- `tests/test_f1_ors_migration.py` captura o POST do SDK 2.3.3 sem rede e verifica
+  o path de Directions JSON, coordenadas `[lon, lat]`, header `Authorization`,
+  host bloqueado, prefixo customizado, alias e chunking compatível com Python 3.11.
+  `tests/test_s4_new_tools.py -k missing_ors_provider` confirma ausência de
+  geocodificação sem chave. A suíte focal de F1 e Docker passou: **32 passed**;
+  `docker compose config --quiet` passou.
+- Import/startup foi verificado em Python 3.12.15, a versão minor do Dockerfile.
+  Não há interpretador Python 3.11 instalado neste ambiente; isso permanece como
+  pendência para concluir a fase F1 e fechar esta issue. Nenhuma requisição
+  autenticada ao serviço ORS real foi feita; a evidência do endpoint é de captura
+  determinística.

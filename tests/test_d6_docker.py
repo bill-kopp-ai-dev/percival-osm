@@ -92,6 +92,16 @@ def test_compose_declares_the_single_init() -> None:
     assert service["stop_grace_period"] == "30s"
 
 
+def test_compose_passes_ors_instance_and_uses_heigit_default() -> None:
+    import yaml
+
+    compose = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
+    environment = compose["services"]["mcp-osm"]["environment"]
+    assert environment["ORS_INSTANCE"] == "${ORS_INSTANCE:-${ORS_URL:-}}"
+    assert environment["OSM_UPSTREAM_ALLOWED_HOSTS"].endswith("api.heigit.org}")
+    assert "api.openrouteservice.org" not in environment["OSM_UPSTREAM_ALLOWED_HOSTS"]
+
+
 def test_dockerfile_drops_capabilities_in_compose() -> None:
     """Verify compose also drops ALL capabilities and pins no-new-privileges."""
     content = COMPOSE.read_text(encoding="utf-8")

@@ -266,7 +266,7 @@ async def test_validate_upstreams_lock_exists():
         from_header="from@x.com",
         cache_file="/tmp/osm-test-lock.json",
         cache_allowed_dirs="/tmp",
-        upstream_allowed_hosts="nominatim.openstreetmap.org,overpass-api.de,api.openrouteservice.org",
+        upstream_allowed_hosts="nominatim.openstreetmap.org,overpass-api.de,api.heigit.org",
     )
     searcher = OsmSearcher(settings, user_valves=None)
     import asyncio
@@ -303,7 +303,7 @@ async def test_single_flight_distance_dedupes_concurrent_calls(monkeypatch):
         from_header="from@x.com",
         cache_file="/tmp/osm-test-singleflight.json",
         cache_allowed_dirs="/tmp",
-        upstream_allowed_hosts="nominatim.openstreetmap.org,overpass-api.de,api.openrouteservice.org",
+        upstream_allowed_hosts="nominatim.openstreetmap.org,overpass-api.de,api.heigit.org",
     )
     searcher = OsmSearcher(settings, user_valves=None)
     # Wipe any pre-existing cache entry.

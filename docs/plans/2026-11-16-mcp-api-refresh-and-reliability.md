@@ -23,7 +23,8 @@ O plano é executado fase a fase. As listas com caixas em [§4](#sec-4) são a f
 única de estado: marque cada tarefa ao concluí-la e marque a caixa da fase somente
 depois de verificar o aceite daquela fase.
 
-**Estado atual:** nenhuma fase iniciada. Próximo incremento: **F1**.
+**Estado atual:** F1 implementada; a fase segue em execução até validar startup
+com Python 3.11. Próximo incremento: concluir essa verificação.
 
 - [ ] [F1](#f1) — Migração ORS e baseline portável — P1 — R1, R11
 - [ ] [F2](#f2) — Cache resiliente e fixtures isolados — P1 — R2
@@ -188,15 +189,15 @@ das fases respeita as dependências do §5. Todas as tarefas começam pendentes.
 
 **Tarefas**
 
-- [ ] **F1.1** Trocar fallback para `https://api.heigit.org/openrouteservice` e
+- [x] **F1.1** Trocar fallback para `https://api.heigit.org/openrouteservice` e
   default de allowlist para `api.heigit.org`; manter `ORS_INSTANCE`/`ORS_URL` e
   precedência compatíveis. Normalizar barra final sem perder prefixos de
   instâncias próprias.
-- [ ] **F1.2** Atualizar `.env.example`, Compose, README, integração e fixtures.
+- [x] **F1.2** Atualizar `.env.example`, Compose, README, integração e fixtures.
   Compose hoje não encaminha `ORS_INSTANCE`; passar a encaminhar o override
   explicitamente. Host legado só pode ser escolha explícita, não fallback ou
   redirect automático.
-- [ ] **F1.3** Corrigir o import de `batched` com helper compatível com Python
+- [x] **F1.3** Corrigir o import de `batched` com helper compatível com Python
   3.11, mantendo comportamento e layout. A migração ORS não depende de
   atualizar todo o lock.
 
@@ -208,7 +209,17 @@ Testar prefixo customizado e host não autorizado. Sem chave, devolver
 passa em Python 3.11 e na versão usada pelo container. Esta fase fecha a issue
 de migração apenas após implementar e verificar seu escopo; R6 continua em F3.
 
-**Evidência:** _(a registrar: testes, commit ou imagem correspondente)_
+**Evidência (2026-11-17):** `tests/test_f1_ors_migration.py` e
+`tests/test_d6_docker.py`: **32 passed**. Request SDK capturado sem rede comprova
+POST no path `/openrouteservice/v2/directions/foot-walking/json`, coordenadas
+lon/lat, chave no header sem query, normalização de barras e preservação do
+prefixo. Host não autorizado é rejeitado; alias `ORS_URL` funciona. As duas
+regressões `tests/test_s4_new_tools.py -k missing_ors_provider` passaram e
+comprovam `provider_not_configured` antes de geocodificar. `docker compose config
+--quiet`, import/startup local em Python 3.12.15 e `git diff --check` passaram.
+Não foi feita chamada ao serviço ORS real. Este ambiente não tem interpretador
+Python 3.11; por isso a caixa de conclusão da fase permanece pendente até essa
+verificação.
 
 - [ ] **F1 concluída** — aceite verificado e evidência registrada.
 

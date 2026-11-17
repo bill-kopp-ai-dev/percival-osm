@@ -35,7 +35,7 @@ import uvicorn
 
 from urllib.parse import urljoin, urlsplit
 from operator import itemgetter
-from itertools import batched
+from itertools import islice
 
 from .osm_primitives import register_all_primitives
 
@@ -148,7 +148,7 @@ class Settings(BaseSettings):
         ),
     )
     upstream_allowed_hosts: str = Field(
-        default="nominatim.openstreetmap.org,overpass-api.de,api.openrouteservice.org",
+        default="nominatim.openstreetmap.org,overpass-api.de,api.heigit.org",
         validation_alias=AliasChoices(
             "upstream_allowed_hosts",
             "OSM_UPSTREAM_ALLOWED_HOSTS",
@@ -974,7 +974,14 @@ async def _run_http_transport(
 
 def chunk_list(input_list, chunk_size):
     """Split a list into fixed-size chunks (last chunk may be smaller)."""
-    return [list(chunk) for chunk in batched(input_list, chunk_size)]
+    if chunk_size < 1:
+        raise ValueError("chunk_size must be at least one")
+
+    iterator = iter(input_list)
+    chunks = []
+    while chunk := list(islice(iterator, chunk_size)):
+        chunks.append(chunk)
+    return chunks
 
 
 def to_lookup(thing) -> Optional[str]:
@@ -1700,7 +1707,8 @@ class OrsRouter:
 
         ors_api_key = (self.valves.ors_api_key or "").strip()
         ors_instance = (self.valves.ors_instance or "").strip()
-        ors_instance = ors_instance if ors_instance else "https://api.openrouteservice.org"
+        ors_instance = ors_instance or "https://api.heigit.org/openrouteservice"
+        ors_instance = ors_instance.rstrip("/")
         validate_upstream_url_policy(ors_instance, settings=self.valves, label="ors_instance")
 
         if ors_api_key:
@@ -3141,12 +3149,21 @@ class OsmNavigator:
 
     async def navigate(self, start_place: str, destination_place: str):
         await self.event_navigating(done=False)
-        searcher = OsmSearcher(self.valves, self.user_valves, self.event_emitter)
-        router = OrsRouter(self.valves, self.user_valves, self.event_emitter)
         query_payload = {
             "start_place": sanitize_external_text(start_place, max_length=220),
             "destination_place": sanitize_external_text(destination_place, max_length=220),
         }
+
+        if not (self.valves.ors_api_key or "").strip():
+            await self.event_navigating(done=True)
+            return build_tool_response(
+                status="provider_not_configured",
+                message="OpenRouteService routing is not configured; set ORS_API_KEY to request a route.",
+                query=query_payload,
+            )
+
+        searcher = OsmSearcher(self.valves, self.user_valves, self.event_emitter)
+        router = OrsRouter(self.valves, self.user_valves, self.event_emitter)
 
         try:
             start = await searcher.nominatim_search(start_place, limit=1)
@@ -3161,13 +3178,6 @@ class OsmNavigator:
                 )
 
             start, destination = start[0], destination[0]
-            if not (self.valves.ors_api_key or "").strip():
-                await self.event_navigating(done=True)
-                return build_tool_response(
-                    status="provider_not_configured",
-                    message="OpenRouteService routing is not configured; set ORS_API_KEY to request a route.",
-                    query=query_payload,
-                )
             route = await asyncio.to_thread(router.calculate_route, start, destination)
 
             if not route:
@@ -3267,12 +3277,21 @@ class OsmNavigator:
         that downstream agents can walk through one entry at a time.
         """
         await self.event_navigating(done=False)
-        searcher = OsmSearcher(self.valves, self.user_valves, self.event_emitter)
-        router = OrsRouter(self.valves, self.user_valves, self.event_emitter)
         query_payload = {
             "start_place": sanitize_external_text(start_place, max_length=220),
             "destination_place": sanitize_external_text(destination_place, max_length=220),
         }
+
+        if not (self.valves.ors_api_key or "").strip():
+            await self.event_navigating(done=True)
+            return build_tool_response(
+                status="provider_not_configured",
+                message="OpenRouteService routing is not configured; set ORS_API_KEY to request directions.",
+                query=query_payload,
+            )
+
+        searcher = OsmSearcher(self.valves, self.user_valves, self.event_emitter)
+        router = OrsRouter(self.valves, self.user_valves, self.event_emitter)
 
         try:
             start = await searcher.nominatim_search(start_place, limit=1)
@@ -3287,13 +3306,6 @@ class OsmNavigator:
                 )
 
             start, destination = start[0], destination[0]
-            if not (self.valves.ors_api_key or "").strip():
-                await self.event_navigating(done=True)
-                return build_tool_response(
-                    status="provider_not_configured",
-                    message="OpenRouteService routing is not configured; set ORS_API_KEY to request directions.",
-                    query=query_payload,
-                )
             route = await asyncio.to_thread(router.calculate_route, start, destination)
 
             if not route:

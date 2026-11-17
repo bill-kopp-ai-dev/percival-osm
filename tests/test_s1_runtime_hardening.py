@@ -19,7 +19,7 @@ from percival_osm_mcp.server import (
 
 def _base_settings(**overrides):
     values = {
-        "upstream_allowed_hosts": "nominatim.openstreetmap.org,overpass-api.de,api.openrouteservice.org",
+        "upstream_allowed_hosts": "nominatim.openstreetmap.org,overpass-api.de,api.heigit.org",
         "cache_allowed_dirs": "/tmp",
         "cache_file": "/tmp/osm-cache.json",
     }

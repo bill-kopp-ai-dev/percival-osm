@@ -29,7 +29,7 @@ def _base_settings(**overrides):
     os.environ["USER_AGENT"] = "percival-osm-test/1.0"
     os.environ["FROM_HEADER"] = "test@example.com"
     values = {
-        "upstream_allowed_hosts": "nominatim.openstreetmap.org,overpass-api.de,api.openrouteservice.org",
+        "upstream_allowed_hosts": "nominatim.openstreetmap.org,overpass-api.de,api.heigit.org",
         "cache_allowed_dirs": "/tmp",
         "cache_file": "/tmp/osm-cache.json",
         "user_agent": "percival-osm-test/1.0",
@@ -344,7 +344,7 @@ async def test_directions_returns_structured_steps(monkeypatch) -> None:
 async def test_directions_reports_missing_ors_provider(monkeypatch) -> None:
     class FakeSearcher:
         async def nominatim_search(self, place, limit=1):
-            return [{"lat": 0.0, "lon": 0.0, "display_name": place}]
+            raise AssertionError("geocoding must not run without ORS credentials")
 
         async def aclose(self):
             return None
@@ -365,7 +365,7 @@ async def test_directions_reports_missing_ors_provider(monkeypatch) -> None:
 async def test_navigate_reports_missing_ors_provider_without_fake_route(monkeypatch) -> None:
     class FakeSearcher:
         async def nominatim_search(self, place, limit=1):
-            return [{"lat": 40.0, "lon": -70.0, "display_name": place}]
+            raise AssertionError("geocoding must not run without ORS credentials")
 
         async def aclose(self):
             return None

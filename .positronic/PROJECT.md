@@ -80,7 +80,7 @@ controle do operador.
   `OSM_CACHE_ALLOWED_DIRS` (default `/tmp`); auth obrigatória
   (`MCP_OSM_AUTH_TOKEN`) para HTTP não-loopback.
 - Upstreams permitidos (allow-list): `nominatim.openstreetmap.org`,
-  `overpass-api.de`, `api.openrouteservice.org` — qualquer novo host
+  `overpass-api.de`, `api.heigit.org` — qualquer novo host
   precisa de revisão de política.
 
 ## Verification
