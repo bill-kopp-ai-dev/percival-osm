@@ -382,6 +382,8 @@ _OPERATIONAL_LOCK = Lock()
 _TOOL_CALL_COUNTS: dict[str, int] = {}
 _TOOL_ERROR_COUNTS: dict[str, int] = {}
 _LAST_UPSTREAM_FAILURE: dict[str, object] = {}  # {kind, message, ts}
+_CACHE_STATES: dict[str, dict[str, Any]] = {}
+_CACHE_STATS: dict[str, Any] = {"mode": "persistent", "degraded": False, "io_errors": {}}
 _SERVER_START_TS: float = time.time()
 try:
     SERVER_VERSION = package_version("percival-osm")
@@ -705,11 +707,17 @@ def get_operational_snapshot() -> dict[str, Any]:
         tool_calls = dict(_TOOL_CALL_COUNTS)
         tool_errors = dict(_TOOL_ERROR_COUNTS)
         last_failure = dict(_LAST_UPSTREAM_FAILURE) if _LAST_UPSTREAM_FAILURE else None
+        cache = {
+            "mode": _CACHE_STATS["mode"],
+            "degraded": _CACHE_STATS["degraded"],
+            "io_errors": dict(_CACHE_STATS["io_errors"]),
+        }
     return {
         "uptime_seconds": round(time.time() - _SERVER_START_TS, 3),
         "tool_calls": tool_calls,
         "tool_errors": tool_errors,
         "last_upstream_failure": last_failure,
+        "cache": cache,
     }
 
 
@@ -1595,6 +1603,7 @@ class AsyncTokenBucket:
 class OsmCache:
     _LOCKS_GUARD = Lock()
     _FILE_LOCKS: dict[str, Lock] = {}
+    _CACHE_STATES = _CACHE_STATES
 
     def __init__(
         self,
@@ -1606,7 +1615,20 @@ class OsmCache:
         self.path = resolve_secure_cache_path(cache_filename, settings=settings)
         self.filename = str(self.path)
         self.default_ttl_seconds = max(int(default_ttl_seconds), 1)
-        self.data: dict[str, dict[str, Any]] = {"entries": {}}
+        identity = {
+            "nominatim": settings.nominatim_url,
+            "overpass": settings.overpass_url,
+            "ors": settings.ors_instance,
+            "format": "json-v1",
+        }
+        self.namespace = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:16]
+        self._state_key = f"{self.filename}:{self.namespace}"
+        self._lock = self._lock_for_file(self.filename)
+        with self._lock:
+            self._state = self._CACHE_STATES.setdefault(
+                self._state_key, {"data": {"entries": {}}, "mode": "persistent", "degraded": False}
+            )
+            self.data = self._state["data"]
         self._load()
 
     @classmethod
@@ -1624,11 +1646,23 @@ class OsmCache:
                 raw = json.load(f)
         except FileNotFoundError:
             return
-        except json.JSONDecodeError:
+        except (OSError, json.JSONDecodeError, UnicodeError) as exc:
+            self._io_failure(type(exc).__name__)
             return
 
         if isinstance(raw, dict) and isinstance(raw.get("entries"), dict):
-            self.data = raw
+            valid = {
+                str(k): v for k, v in raw["entries"].items()
+                if isinstance(v, dict) and (
+                    v.get("expires_at") is None
+                    or isinstance(v.get("expires_at"), (int, float))
+                    and math.isfinite(v["expires_at"])
+                )
+            }
+            if len(valid) != len(raw["entries"]):
+                self._io_failure("invalid_structure")
+            with self._lock:
+                self.data.update(valid)
             return
 
         # Backward compatibility: old cache files were plain dicts.
@@ -1637,18 +1671,50 @@ class OsmCache:
                 str(key): {"value": value, "expires_at": None}
                 for key, value in raw.items()
             }
-            self.data = {"entries": entries}
+            with self._lock:
+                self.data.update(entries)
             self._persist()
+        else:
+            self._io_failure("invalid_structure")
+
+    def _io_failure(self, category: str) -> None:
+        self._state["mode"] = "memory"
+        self._state["degraded"] = True
+        with _OPERATIONAL_LOCK:
+            _CACHE_STATS["mode"] = "memory"
+            _CACHE_STATS["degraded"] = True
+            counts = _CACHE_STATS["io_errors"]
+            counts[category] = counts.get(category, 0) + 1
 
     def _persist(self) -> None:
         path = self.path
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = path.with_suffix(path.suffix + ".tmp")
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(self.data, f)
-        os.chmod(tmp_path, 0o600)
-        tmp_path.replace(path)
-        os.chmod(path, 0o600)
+        tmp_path = path.with_name(path.name + f".{os.getpid()}.{id(self)}.tmp")
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    latest = json.load(f)
+                if isinstance(latest, dict) and isinstance(latest.get("entries"), dict):
+                    self.data.update(latest["entries"])
+            except FileNotFoundError:
+                pass
+            with open(tmp_path, "x", encoding="utf-8") as f:
+                os.chmod(tmp_path, 0o600)
+                json.dump({"entries": self.data}, f)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, path)
+            os.chmod(path, 0o600)
+            self._state["mode"] = "persistent"
+            with _OPERATIONAL_LOCK:
+                _CACHE_STATS["mode"] = "persistent"
+        except (OSError, json.JSONDecodeError, UnicodeError) as exc:
+            self._io_failure(type(exc).__name__)
+        finally:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     def _get_entry(self, key: str) -> Optional[dict[str, Any]]:
         entries = self.data.get("entries", {})
@@ -1657,34 +1723,32 @@ class OsmCache:
             return None
 
         expires_at = entry.get("expires_at")
-        if isinstance(expires_at, (int, float)) and time.time() >= float(expires_at):
+        if expires_at is not None and (not isinstance(expires_at, (int, float)) or
+                                      not math.isfinite(expires_at) or time.time() >= expires_at):
             entries.pop(key, None)
             self._persist()
             return None
         return entry
 
     def get(self, key):
-        lock = self._lock_for_file(self.filename)
-        with lock:
-            entry = self._get_entry(str(key))
+        with self._lock:
+            entry = self._get_entry(f"{self.namespace}:{key}")
             return entry.get("value") if entry is not None else None
 
     def set(self, key, value, ttl_seconds: Optional[int] = None):
-        lock = self._lock_for_file(self.filename)
         ttl = self.default_ttl_seconds if ttl_seconds is None else int(ttl_seconds)
         expires_at = time.time() + max(ttl, 1)
-        with lock:
+        with self._lock:
             entries = self.data.setdefault("entries", {})
-            entries[str(key)] = {"value": value, "expires_at": expires_at}
+            entries[f"{self.namespace}:{key}"] = {"value": value, "expires_at": expires_at}
             self._persist()
 
     def clear_cache(self):
         """
         Clear all entries from the cache.
         """
-        lock = self._lock_for_file(self.filename)
-        with lock:
-            self.data = {"entries": {}}
+        with self._lock:
+            self.data["entries"].clear()
             self._persist()
 
 
