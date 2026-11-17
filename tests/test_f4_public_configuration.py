@@ -37,7 +37,8 @@ async def test_overpass_enrichment_is_bounded(tmp_path, monkeypatch):
     settings = Settings(user_agent="test/1.0", from_header="test@example.com",
                         cache_file=str(tmp_path / "cache.json"), cache_allowed_dirs=str(tmp_path))
     searcher = OsmSearcher(settings, None)
-    candidates = [{"type": "node", "id": i, "tags": {"shop": "bakery", "source": "survey"}}
+    candidates = [{"type": "node", "id": i, "lat": 0.5, "lon": 0.5,
+                   "tags": {"shop": "bakery", "source": "survey"}}
                   for i in range(100)]
     batches = []
 

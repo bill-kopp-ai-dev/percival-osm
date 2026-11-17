@@ -1,7 +1,7 @@
 # Plano — atualização das APIs e confiabilidade do Percival OSM MCP
 
-- **Data / revisão:** 2026-11-17 / 1.2
-- **Estado:** em execução; F2/F3/F4 concluídas e verificadas, F1 aguarda validação em Python 3.11.
+- **Data / revisão:** 2026-11-17 / 1.4
+- **Estado:** em execução; F2/F3/F4/F5/F6 implementadas e verificadas, F1 aguarda validação em Python 3.11.
 - **Owner / executor / decisor:** Bill Kopp, Positronic Bean Labs.
 - **Objetivo:** resolver as três issues abertas e atualizar a integração com os
   provedores realmente utilizados, preservando o contrato MCP e os controles de
@@ -24,15 +24,15 @@ O plano é executado fase a fase. As listas com caixas em [§4](#sec-4) são a f
 depois de verificar o aceite daquela fase.
 
 **Estado atual:** F1 implementada, aguardando a validação de startup em Python
-3.11; F2, F3 e F4 implementadas e verificadas. Próximo incremento: completar F1
-com Python 3.11 ou avançar F5.
+3.11; F2, F3, F4, F5 e F6 implementadas e verificadas. Próximo incremento:
+completar F1 com Python 3.11 ou avançar F7.
 
 - [ ] [F1](#f1) — Migração ORS e baseline portável — P1 — R1, R11
 - [x] [F2](#f2) — Cache resiliente e fixtures isolados — P1 — R2
 - [x] [F3](#f3) — Orçamento único de prazo, transporte e cancelamento — P1 — R2, R5, R6
 - [x] [F4](#f4) — Políticas dos provedores e controle agregado — P1 — R4, R7
-- [ ] [F5](#f5) — Resultados compatíveis e procedência — P2 — R7–R9
-- [ ] [F6](#f6) — Telemetria dos outcomes MCP — P2 — R3
+- [x] [F5](#f5) — Resultados compatíveis e procedência — P2 — R7–R9
+- [x] [F6](#f6) — Telemetria dos outcomes MCP — P2 — R3
 - [ ] [F7](#f7) — Documentação, pacote e verificação integrada — P2 — R9–R11
 
 **Convenções de acompanhamento**
@@ -390,24 +390,24 @@ Controle compartilhado é por processo, não entre managers; não houve deploy.
 
 **Tarefas**
 
-- [ ] **F5.1** Manter `format=json` explícito no Nominatim (continua suportado
+- [x] **F5.1** Manter `format=json` explícito no Nominatim (continua suportado
   [S5]–[S6]); normalizar `class`/`category` se suportar jsonv2 futuramente. Não
   migrar formato junto com endpoint sem necessidade. Preservar ausência legítima
   de campos, tratar erro semântico/JSON malformado e validar coordenadas
   finitas/faixas.
-- [ ] **F5.2** Lookup: associar por `(osm_type, osm_id)`, não apenas ID numérico;
+- [x] **F5.2** Lookup: associar por `(osm_type, osm_id)`, não apenas ID numérico;
   chunk <=50 [S6]. TTL/chave devem respeitar backend, formato e parâmetros
   relevantes.
-- [ ] **F5.3** Avaliar `out center` para POIs e processar nodes, ways e relations.
+- [x] **F5.3** Avaliar `out center` para POIs e processar nodes, ways e relations.
   Adaptar o normalizador antes da troca; centro de bbox não é entrada nem ponto
   exato do estabelecimento. Rejeitar/indicar resposta parcial com `remark` de
   erro, sem armazená-la como sucesso vazio; preservar timestamp da base quando
   informado.
-- [ ] **F5.4** Em falha ORS, manter apenas distância em linha reta com fonte
+- [x] **F5.4** Em falha ORS, manter apenas distância em linha reta com fonte
   explícita; não gravar haversine no cache/campo de distância viária. Perfil
   executado informa `travel_type`; caminhada não deve ser rotulada como
   bicicleta.
-- [ ] **F5.5** Acrescentar metadados estruturados de fonte, atribuição
+- [x] **F5.5** Acrescentar metadados estruturados de fonte, atribuição
   `© OpenStreetMap contributors`, link de licença e provedor [S12]. Incluir no
   markdown quando apresentado e orientar o consumidor a preservar o crédito; não
   inventar timestamp de atualização da base quando só há data da consulta.
@@ -417,9 +417,23 @@ aparecem; erro/resultado parcial não vira `no_results`. Distância aproximada e
 viária são distinguíveis nos modos compact/detailed. Chaves públicas existentes
 são preservadas; correções semânticas são descritas em nota de migração.
 
-**Evidência:** _(a registrar)_
+**Evidência (2026-11-17):** `tests/test_f5_results_provenance.py` cobre limites e
+validação de coordenadas; `format=json` e erro semântico Nominatim; colisão de ID
+numérico entre node/way; relations com `center`; timestamp de base; rejeição de
+Overpass `remark`; distinção entre estimativa em linha reta e distância ORS nos
+modos compact/detailed; perfil real caminhada/carro; atribuição e licença. Foram
+**56 passed** nas regressões focadas (`test_f5_results_provenance.py`, F4,
+`test_s4_new_tools.py` e F1). A suíte completa passou: **157 passed** via
+`.venv/bin/pytest -q -rA`; `git diff --check` também passou. Sem requisições a
+upstream real.
+Mudanças semânticas compatíveis: `travel_distance` continua presente, mas deixa
+de apresentar haversine como rota em falha ORS; ganha `distance_method` e
+`travel_distance_km` quando há rota, e `travel_type` passa a refletir o perfil
+executado (`walking`/`car`). `out center` gera ponto representativo aproximado,
+não localização exata de entrada. A resposta rejeita `remark` do Overpass como
+`upstream_error`, em vez de armazená-lo/interpretá-lo como resultado vazio.
 
-- [ ] **F5 concluída** — aceite verificado e evidência registrada.
+- [x] **F5 concluída** — aceite verificado e evidência registrada.
 
 <a id="f6"></a>
 
@@ -443,16 +457,16 @@ são preservadas; correções semânticas são descritas em nota de migração.
 
 **Tarefas**
 
-- [ ] **F6.1** Adicionar `tool_outcomes[tool][outcome]` no health, usando o
+- [x] **F6.1** Adicionar `tool_outcomes[tool][outcome]` no health, usando o
   vocabulário fechado acima.
-- [ ] **F6.2** Contar uma chamada e um outcome terminal por invocação MCP
+- [x] **F6.2** Contar uma chamada e um outcome terminal por invocação MCP
   validada que chegue ao handler, no ponto de instrumentação registrado;
   chamadas internas entre handlers e aliases não podem duplicar métricas.
   Rejeições de schema antes do handler não integram esse denominador.
-- [ ] **F6.3** Durante chamadas em andamento, calls pode superar a soma dos
+- [x] **F6.3** Durante chamadas em andamento, calls pode superar a soma dos
   outcomes; em repouso devem coincidir. O snapshot de `osm_get_health` pode
   preceder o próprio outcome; documentar essa diferença temporal.
-- [ ] **F6.4** Nomes/status são enumerados; nenhuma query, URL, coordenada, ID de
+- [x] **F6.4** Nomes/status são enumerados; nenhuma query, URL, coordenada, ID de
   usuário ou credencial vira label. Contadores são em memória por processo, não
   histórico persistente.
 
@@ -463,9 +477,18 @@ Nomes/status são enumerados; nenhuma query, URL, coordenada, ID de usuário ou
 credencial vira label. Contadores são em memória por processo, não histórico
 persistente. Fecha a issue de outcomes.
 
-**Evidência:** _(a registrar)_
+**Evidência (2026-11-17):** instrumentação no callback registrado do FastMCP; o
+wrapper mantém a assinatura/schema do handler e deixa a função de negócio sem
+contabilização para que delegações internas não dupliquem chamadas. Aliases usam
+o mesmo ponto de instrumentação. `tool_calls` incrementa na entrada, outcomes
+terminais só após retorno/erro/cancelamento; exceções propagadas também incrementam
+`tool_errors`, enquanto cancelamento não é erro. Status fora do vocabulário vira
+`unknown`. `osm_get_health` expõe contadores por processo e documenta que o
+snapshot pode preceder o próprio outcome e que chamadas em andamento ainda não
+possuem outcome terminal. Verificação focada:
+`.venv/bin/pytest -q tests/test_f6_tool_outcomes.py tests/test_s3_observability.py tests/test_s4_new_tools.py` — **30 passed**. Fixtures exercitam callbacks MCP reais para `no_results`, `upstream_error`, exceção, cancelamento e sucesso local; confirmam `tool_errors` exclusivamente para exceção propagada. Sem consulta a upstream real.
 
-- [ ] **F6 concluída** — aceite verificado e evidência registrada.
+- [x] **F6 concluída** — aceite verificado e evidência registrada.
 
 <a id="f7"></a>
 
@@ -530,7 +553,8 @@ agendar uma atualização de runtime.
 |---|---|---|
 | [Migração ORS](../issues/2026-11-04-ors-api-endpoint-migration.md) | F1 | URL final POST/json correta, prefixo/override/allowlist, exemplos coerentes e ausência de chave controlada. |
 | [Cache / cleanup](../issues/closed/2026-11-16-cache-persist-failure-escapes-as-raw-exception.md) | F2 + F3 concluídas | Falhas de I/O e cache inválido sem exceção crua; close/cancelamento dentro do orçamento; regressões isoladas em `tmp_path`. Issue movida para `closed/` após 84 testes focados aprovados em 2026-11-17. |
-| [Outcomes controlados](../issues/2026-10-31-controlled-tool-failure-outcomes-not-counted.md) | F6 | Matriz de status, exceção e cancelamento via callbacks MCP; sem dupla contagem ou labels pessoais. |
+| [Outcomes controlados](../issues/closed/2026-10-31-controlled-tool-failure-outcomes-not-counted.md) | F6 concluída | Matriz via callbacks MCP validada em `test_f6_tool_outcomes.py`; issue movida para `closed/` em 2026-11-17. |
+| Resultados compatíveis e procedência (R7–R9) | F5 | `tests/test_f5_results_provenance.py`; não havia issue aberta específica para esta fase, portanto nenhuma issue foi movida. |
 
 Manter cada issue aberta até obter sua evidência; então registrar resultado e
 mover para `closed/`, ajustando os links deste plano. Encerrar o plano somente
@@ -578,7 +602,7 @@ registrar a decisão durável em um único ADR; não exigir ADR para cada corre�
 ## 9. Handoff e próxima ação
 
 Próximo incremento recomendado: validar startup em **Python 3.11** para fechar
-F1 ou avançar F5. F2/F3/F4 estão concluídas. Bill é o único decisor; não há revisão
+F1 ou avançar F7. F2/F3/F4/F5/F6 estão concluídas. Bill é o único decisor; não há revisão
 externa ou aceite duplicado como condição de conclusão.
 
 O acompanhamento de execução está no [Painel de execução](#execucao) e nas

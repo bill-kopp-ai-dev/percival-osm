@@ -352,7 +352,7 @@ mcp = FastMCP(
 # the content; this call attaches 3 prompts and 2 resources to the server.
 register_all_primitives(mcp)
 
-NOMINATIM_LOOKUP_TYPES = {"node": "N", "route": "R", "way": "W"}
+NOMINATIM_LOOKUP_TYPES = {"node": "N", "relation": "R", "route": "R", "way": "W"}
 
 OLD_VALVE_SETTING = (
     "Configuration error: nominatim_url must point to the endpoint root "
@@ -378,6 +378,36 @@ NO_CONFUSION = (
 # Give examples of OSM links to help prevent wonky generated links
 # with correct GPS coords but incorrect URLs.
 EXAMPLE_OSM_LINK = "https://www.openstreetmap.org/#map=19/<lat>/<lon>"
+OSM_ATTRIBUTION = "© OpenStreetMap contributors"
+OSM_LICENSE_URL = "https://www.openstreetmap.org/copyright"
+ORS_ATTRIBUTION = "OpenRouteService (HeiGIT)"
+ORS_PROVIDER_URL = "https://openrouteservice.org/"
+
+
+def _valid_coordinate_pair(value: Mapping[str, Any]) -> bool:
+    """Return whether present latitude/longitude values are complete and valid."""
+    has_lat, has_lon = "lat" in value, "lon" in value
+    if not has_lat and not has_lon:
+        return True
+    if has_lat != has_lon:
+        return False
+    try:
+        lat, lon = float(value["lat"]), float(value["lon"])
+    except (TypeError, ValueError):
+        return False
+    return math.isfinite(lat) and math.isfinite(lon) and -90 <= lat <= 90 and -180 <= lon <= 180
+
+
+def osm_provenance(*, base_timestamp: Optional[str] = None) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "provider": "OpenStreetMap",
+        "attribution": OSM_ATTRIBUTION,
+        "license": "ODbL-1.0",
+        "license_url": OSM_LICENSE_URL,
+    }
+    if base_timestamp:
+        result["data_timestamp"] = base_timestamp
+    return result
 OSM_LINK_INSTRUCTIONS = (
     "Make friendly human-readable OpenStreetMap links when possible, "
     "by using the latitude and longitude of the amenities: "
@@ -401,6 +431,11 @@ _SECURITY_METRICS: dict[str, int] = {}
 _OPERATIONAL_LOCK = Lock()
 _TOOL_CALL_COUNTS: dict[str, int] = {}
 _TOOL_ERROR_COUNTS: dict[str, int] = {}
+_TOOL_OUTCOME_COUNTS: dict[str, dict[str, int]] = {}
+_TOOL_OUTCOMES = frozenset({
+    "ok", "no_results", "invalid_request", "provider_not_configured",
+    "config_error", "upstream_error", "error", "exception", "cancelled", "unknown",
+})
 _LAST_UPSTREAM_FAILURE: dict[str, object] = {}  # {kind, message, ts}
 _CACHE_STATES: dict[str, dict[str, Any]] = {}
 _CACHE_STATS: dict[str, Any] = {"mode": "persistent", "degraded": False, "io_errors": {}}
@@ -445,7 +480,38 @@ def _conditionally_register_tool(name: str):
 
     def decorator(handler):
         if _tool_is_exposed(name):
-            return mcp.tool(name)(handler)
+            def _record_result(result):
+                record_tool_outcome(name, _response_outcome(result))
+                return result
+
+            def _record_exception(exc):
+                if isinstance(exc, asyncio.CancelledError):
+                    record_tool_outcome(name, "cancelled")
+                else:
+                    record_tool_error(name)
+                    record_tool_outcome(name, "exception")
+
+            if inspect.iscoroutinefunction(handler):
+                async def instrumented_handler(*args, **kwargs):
+                    record_tool_call(name)
+                    try:
+                        result = await handler(*args, **kwargs)
+                    except BaseException as exc:
+                        _record_exception(exc)
+                        raise
+                    return _record_result(result)
+            else:
+                def instrumented_handler(*args, **kwargs):
+                    record_tool_call(name)
+                    try:
+                        result = handler(*args, **kwargs)
+                    except BaseException as exc:
+                        _record_exception(exc)
+                        raise
+                    return _record_result(result)
+
+            functools.update_wrapper(instrumented_handler, handler)
+            mcp.tool(name)(instrumented_handler)
         return handler
 
     return decorator
@@ -710,6 +776,24 @@ def record_tool_error(tool_name: str) -> None:
         _TOOL_ERROR_COUNTS[safe_name] = _TOOL_ERROR_COUNTS.get(safe_name, 0) + 1
 
 
+def _response_outcome(result: Any) -> str:
+    """Extract only the bounded status vocabulary from a tool payload."""
+    try:
+        payload = json.loads(result) if isinstance(result, str) else result
+        status = payload.get("status") if isinstance(payload, dict) else None
+    except (TypeError, ValueError, json.JSONDecodeError):
+        status = None
+    return status if isinstance(status, str) and status in _TOOL_OUTCOMES else "unknown"
+
+
+def record_tool_outcome(tool_name: str, outcome: str) -> None:
+    safe_name = tool_name if tool_name in CANONICAL_TOOL_NAMES | set(LEGACY_CATEGORY_ALIASES) else "unknown"
+    safe_outcome = outcome if outcome in _TOOL_OUTCOMES else "unknown"
+    with _OPERATIONAL_LOCK:
+        counts = _TOOL_OUTCOME_COUNTS.setdefault(safe_name, {})
+        counts[safe_outcome] = counts.get(safe_outcome, 0) + 1
+
+
 def record_upstream_failure(kind: str, message: str) -> None:
     """Track the most recent upstream failure (rate-limited, blocked, network)."""
     safe_kind = sanitize_external_text(kind, max_length=40) or "unknown"
@@ -726,6 +810,7 @@ def get_operational_snapshot() -> dict[str, Any]:
     with _OPERATIONAL_LOCK:
         tool_calls = dict(_TOOL_CALL_COUNTS)
         tool_errors = dict(_TOOL_ERROR_COUNTS)
+        tool_outcomes = {tool: dict(counts) for tool, counts in _TOOL_OUTCOME_COUNTS.items()}
         last_failure = dict(_LAST_UPSTREAM_FAILURE) if _LAST_UPSTREAM_FAILURE else None
         cache = {
             "mode": _CACHE_STATS["mode"],
@@ -736,6 +821,7 @@ def get_operational_snapshot() -> dict[str, Any]:
         "uptime_seconds": round(time.time() - _SERVER_START_TS, 3),
         "tool_calls": tool_calls,
         "tool_errors": tool_errors,
+        "tool_outcomes": tool_outcomes,
         "last_upstream_failure": last_failure,
         "cache": cache,
     }
@@ -746,6 +832,7 @@ def reset_operational_metrics_for_tests() -> None:
     with _OPERATIONAL_LOCK:
         _TOOL_CALL_COUNTS.clear()
         _TOOL_ERROR_COUNTS.clear()
+        _TOOL_OUTCOME_COUNTS.clear()
         _LAST_UPSTREAM_FAILURE.clear()
         _SERVER_START_TS = time.time()
 
@@ -1081,7 +1168,7 @@ def detailed_instructions(tag_type_str: str) -> str:
         "Report all available information (address, contact info, website, etc).\n\n"
         "Include all relevant results, and give closer results "
         "first. Closer results are higher in the list. When telling the "
-        "user the distance, use the TRAVEL DISTANCE. Do not say one "
+        "user the route distance only when an actual route is supplied; a straight-line estimate is not a travel distance. Do not say one "
         "distance is farther away than another. Just say what the "
         "distances are. "
         f"{OSM_LINK_INSTRUCTIONS}"
@@ -1116,7 +1203,7 @@ def simple_instructions(tag_type_str: str) -> str:
         " - Contact information (address, phone, website, email, etc)\n\n"
         "Include all relevant results, and give the CLOSEST result "
         "first. The results are ordered by closeness as the crow flies. "
-        "When telling the user about distances, use the TRAVEL DISTANCE only. "
+        "Use a route distance only when an actual route is supplied; a straight-line estimate is not a travel distance. "
         "Only use relevant results. If there are no relevant results, say so. "
         "Make sure that your results are in the actual location the user is talking about, "
         "and not a place of the same name in a different country."
@@ -1197,22 +1284,39 @@ def thing_has_info(thing):
 
 def process_way_result(way) -> Optional[dict]:
     """
-    Post-process an OSM Way dict to remove the geometry and node
-    info, and calculate a single GPS coordinate from its bounding
-    box.
+    Normalize an Overpass way/relation and use its representative center.
+    A bounding-box midpoint remains a fallback approximation, not an exact POI.
     """
     if "nodes" in way:
         del way["nodes"]
 
     if "geometry" in way:
         del way["geometry"]
+    way.pop("members", None)
+
+    center = way.get("center")
+    if (
+        isinstance(center, dict)
+        and "lat" in center
+        and "lon" in center
+        and _valid_coordinate_pair(center)
+    ):
+        way["lat"] = float(center["lat"])
+        way["lon"] = float(center["lon"])
+        way.pop("center", None)
+        way.pop("bounds", None)
+        return way
 
     if "bounds" in way:
-        way_center = get_bounding_box_center(way["bounds"])
-        way["lat"] = way_center["lat"]
-        way["lon"] = way_center["lon"]
-        del way["bounds"]
-        return way
+        try:
+            way_center = get_bounding_box_center(way["bounds"])
+            if _valid_coordinate_pair(way_center):
+                way["lat"] = way_center["lat"]
+                way["lon"] = way_center["lon"]
+                del way["bounds"]
+                return way
+        except (KeyError, TypeError, ValueError):
+            pass
 
     return None
 
@@ -1407,7 +1511,7 @@ def parse_and_validate_thing(thing: dict) -> Optional[dict]:
     # class of POIs (leisure).
     has_name = "name" in tags or "name" in thing
     is_leisure = "leisure" in tags or "leisure" in thing
-    if "lat" not in thing or "lon" not in thing:
+    if "lat" not in thing or "lon" not in thing or not _valid_coordinate_pair(thing):
         return None
 
     if not has_name and not is_leisure:
@@ -1443,10 +1547,15 @@ def parse_and_validate_thing(thing: dict) -> Optional[dict]:
     friendly_thing["distance"] = "{:.3f}".format(distance) if distance is not None else "unknown"
     if nav_distance is not None:
         friendly_thing["nav_distance"] = "{:.3f}".format(nav_distance) + " km"
+        friendly_thing["distance_method"] = "openrouteservice"
     else:
-        friendly_thing["nav_distance"] = (
-            f"a bit more than {friendly_thing['distance']}km"
+        straight_line = (
+            f"{friendly_thing['distance']} km (straight-line estimate; route unavailable)"
+            if distance is not None
+            else "unavailable (straight-line estimate only; route unavailable)"
         )
+        friendly_thing["nav_distance"] = straight_line
+        friendly_thing["distance_method"] = "straight_line_estimate"
 
     friendly_thing["name"] = name if name else "unknown"
     friendly_thing["address"] = address if address else "unknown"
@@ -1488,12 +1597,16 @@ def build_result_items(
         }
 
         if use_distance:
+            item["distance_method"] = friendly_thing["distance_method"]
             item["distance_km"] = sanitize_external_text(
                 friendly_thing["distance"], max_length=32
             )
             item["travel_distance"] = sanitize_external_text(
-                friendly_thing.get("nav_distance", "unknown"), max_length=48
+                friendly_thing.get("nav_distance", "unknown"), max_length=120
             )
+            if thing.get("nav_distance") is not None:
+                item["travel_distance_km"] = round(float(thing["nav_distance"]), 3)
+                item["travel_type"] = thing.get("travel_type", "unknown")
 
         items.append(item)
 
@@ -1531,10 +1644,10 @@ def convert_and_validate_results(
             md_distance = sanitize_external_markdown(item.get("distance_km", "unknown"), max_length=32)
             md_travel = sanitize_external_markdown(
                 item.get("travel_distance", "unknown"),
-                max_length=48,
+                max_length=120,
             )
-            distance = f" - Distance: {md_distance} km\n"
-            travel_distance = f" - Travel Distance: {md_travel}\n"
+            distance = f" - Straight-line estimate: {md_distance} km\n"
+            travel_distance = f" - Route Distance: {md_travel}\n"
 
         if normalized_mode == RESPONSE_MODE_DETAILED:
             entry = (
@@ -1554,9 +1667,9 @@ def convert_and_validate_results(
                 f"  Address: {md_addr}",
             ]
             if use_distance:
-                lines.append(f"  Distance: {sanitize_external_markdown(item.get('distance_km', 'unknown'), max_length=32)} km")
+                lines.append(f"  Straight-line estimate: {sanitize_external_markdown(item.get('distance_km', 'unknown'), max_length=32)} km")
                 lines.append(
-                    f"  Travel Distance: {sanitize_external_markdown(item.get('travel_distance', 'unknown'), max_length=48)}"
+                    f"  Route Distance: {sanitize_external_markdown(item.get('travel_distance', 'unknown'), max_length=120)}"
                 )
             lines.append(f"  Map: {md_map}")
             entry = "\n".join(lines)
@@ -1580,7 +1693,7 @@ def convert_and_validate_results(
             f"to {sanitize_external_markdown(original_location, max_length=180)}."
         )
 
-    return f"{header}\n\n{result_text}"
+    return f"{header}\n\n{result_text}\n\nData: {OSM_ATTRIBUTION} ([ODbL]({OSM_LICENSE_URL}))."
 
 
 class AsyncTokenBucket:
@@ -1727,7 +1840,7 @@ class OsmCache:
             "nominatim": settings.nominatim_url,
             "overpass": settings.overpass_turbo_url,
             "ors": settings.ors_instance,
-            "format": "json-v1",
+            "format": "json-center-v2",
         }
         self.namespace = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:16]
         self._state_key = f"{self.filename}:{self.namespace}"
@@ -1888,6 +2001,10 @@ class OrsRouter:
         route = await self.calculate_route_async(from_thing, to_thing)
         return route.get("summary", {}).get("distance") if route else None
 
+    def profile_for_pair(self, from_thing: dict, to_thing: dict) -> str:
+        distance_km = haversine_distance(from_thing, to_thing)
+        return "foot-walking" if not self.valves.car_only and distance_km <= 1.5 else "driving-car"
+
     async def calculate_route_async(self, from_thing: dict, to_thing: dict) -> Optional[dict]:
         """Request ORS without a worker thread so cancellation stops the HTTP exchange."""
         api_key = (self.valves.ors_api_key or "").strip()
@@ -1895,10 +2012,9 @@ class OrsRouter:
             return None
 
         try:
-            distance_km = haversine_distance(from_thing, to_thing)
+            profile = self.profile_for_pair(from_thing, to_thing)
         except (KeyError, TypeError, ValueError):
-            distance_km = 9000
-        profile = "foot-walking" if not self.valves.car_only and distance_km <= 1.5 else "driving-car"
+            profile = "driving-car"
         coordinates = [
             [from_thing["lon"], from_thing["lat"]],
             [to_thing["lon"], to_thing["lat"]],
@@ -1947,6 +2063,9 @@ class OrsRouter:
         if not routes:
             return None
         route = routes[0]
+        if not isinstance(route, dict):
+            raise UpstreamRequestError("ORS returned an invalid route.")
+        route["profile"] = profile
         self.cache.set(cache_key, route)
         return route
 
@@ -1976,6 +2095,7 @@ class OsmSearcher:
         self._distance_futures: dict[str, asyncio.Future] = {}
         self._distance_futures_lock = asyncio.Lock()
         self._distance_tasks: set[asyncio.Task] = set()
+        self._overpass_base_timestamp: Optional[str] = None
 
     def create_headers(self) -> Optional[dict]:
         if len(self.valves.user_agent.strip()) == 0 or len(self.valves.from_header.strip()) == 0:
@@ -2386,6 +2506,7 @@ class OsmSearcher:
                 f"{sanitize_external_text(thing['name'], max_length=220)} is located {addr}.",
                 f"Opening Hours: {sanitize_external_text(thing['opening_hours'], max_length=200)}",
                 f"Raw JSON (sanitized): {json_data}",
+                f"Data: {OSM_ATTRIBUTION} ({OSM_LICENSE_URL}).",
             ]
         )
 
@@ -2415,7 +2536,13 @@ class OsmSearcher:
                 "type": "source",
                 "data": {
                     "document": [document],
-                    "metadata": [{"source": source_name, "html": False}],
+                    "metadata": [{
+                        "source": source_name,
+                        "html": False,
+                        "attribution": OSM_ATTRIBUTION,
+                        "license": "ODbL-1.0",
+                        "license_url": OSM_LICENSE_URL,
+                    }],
                     "source": {"name": source_name, "url": osm_link},
                 },
             }
@@ -2485,8 +2612,20 @@ class OsmSearcher:
         used_ors = False
         for thing in things_nearby:
             thing_id = _thing_id(thing) or "unknown"
-            cache_key = _stable_cache_key("ors_distance", {"origin": origin, "thing_id": thing_id})
+            try:
+                profile = self._ors.profile_for_pair(origin, thing)
+            except (KeyError, TypeError, ValueError):
+                profile = "driving-car"
+            cache_key = _stable_cache_key(
+                "ors_route_distance_v2",
+                {"origin": origin, "thing_id": thing_id, "profile": profile},
+            )
             nav_distance = self._cache.get(cache_key)
+            if nav_distance is not None and isinstance(nav_distance, dict):
+                cached = nav_distance
+                nav_distance = cached.get("distance")
+                if nav_distance is not None:
+                    thing["travel_type"] = "walking" if cached.get("profile") == "foot-walking" else "car"
 
             if nav_distance is not None:
                 logger.debug("Got nav distance for %s from cache", thing_id)
@@ -2499,12 +2638,14 @@ class OsmSearcher:
                 except Exception as e:
                     logger.warning("Error querying ORS: %s", _upstream_error_summary(e))
                     record_upstream_failure("ORS", _upstream_error_summary(e))
-                    logger.debug("Falling back to regular distance due to ORS error")
-                    nav_distance = thing["distance"]
+                    logger.debug("Keeping straight-line estimate separate from route distance")
+                    nav_distance = None
 
             if nav_distance is not None:
                 used_ors = True
-                self._cache.set(cache_key, nav_distance)
+                travel_type = self._ors.profile_for_pair(origin, thing)
+                thing["travel_type"] = "walking" if travel_type == "foot-walking" else "car"
+                self._cache.set(cache_key, {"distance": nav_distance, "profile": travel_type})
                 thing["nav_distance"] = round(nav_distance, 3)
 
         return used_ors
@@ -2574,6 +2715,11 @@ class OsmSearcher:
         # handle last chunk, which can have nones in order due to the
         # way chunking is done.
         things = [thing for thing in things if thing is not None]
+        if len(things) > 50:
+            merged: list[dict] = []
+            for part in chunk_list(things, 50):
+                merged.extend(await self.nominatim_lookup_by_id(part, format=format))
+            return merged
         lookups = []
 
         for thing in things:
@@ -2585,7 +2731,8 @@ class OsmSearcher:
 
         lookups_to_remove = []
         for lookup_id in lookups:
-            from_cache = self._cache.get(lookup_id)
+            cache_key = f"nominatim_lookup:{format}:addressdetails=1:{lookup_id}"
+            from_cache = self._cache.get(cache_key)
             if from_cache is not None:
                 updated_things.append(from_cache)
                 lookups_to_remove.append(lookup_id)
@@ -2601,7 +2748,7 @@ class OsmSearcher:
             logger.debug("Looking up %d things from Nominatim", len(lookups))
 
         url = urljoin(self.valves.nominatim_url, "lookup")
-        params = {"osm_ids": ",".join(lookups), "format": format}
+        params = {"osm_ids": ",".join(lookups), "format": format, "addressdetails": 1}
 
         headers = self.create_headers()
         if not headers:
@@ -2615,24 +2762,39 @@ class OsmSearcher:
             record_upstream_failure("NominatimLookup", _upstream_error_summary(exc))
             raise UpstreamRequestError("Nominatim lookup request failed.") from exc
 
-        if not data:
+        if data == []:
             logger.debug("No results found for Nominatim lookup")
             await self.event_fetching(done=True)
             return []
 
-        addresses_by_id = {str(item["osm_id"]): item for item in data if "osm_id" in item}
+        if not isinstance(data, list) or any(
+            not isinstance(item, dict)
+            or "error" in item
+            or "osm_type" not in item
+            or "osm_id" not in item
+            for item in data
+        ):
+            raise UpstreamRequestError("Nominatim lookup returned malformed place data.")
+
+        addresses_by_id = {
+            (str(item.get("osm_type", "")).lower(), str(item["osm_id"])): item
+            for item in data
+            if isinstance(item, dict) and "osm_id" in item and item.get("osm_type")
+        }
 
         for thing in things:
-            thing_id = _thing_id(thing)
-            if thing_id is None:
+            lookup = to_lookup(thing)
+            if lookup is None:
                 continue
-            nominatim_result = addresses_by_id.get(str(thing_id), {})
+            type_code, thing_id = lookup[0], lookup[1:]
+            osm_type = {"N": "node", "W": "way", "R": "relation"}[type_code]
+            nominatim_result = addresses_by_id.get((osm_type, str(thing_id)), {})
             if nominatim_result != {}:
                 updated = merge_from_nominatim(thing, nominatim_result)
                 if updated is not None:
                     lookup = to_lookup(thing)
                     if lookup is not None:
-                        self._cache.set(lookup, updated)
+                        self._cache.set(f"nominatim_lookup:{format}:addressdetails=1:{lookup}", updated)
                     updated_things.append(updated)
 
         await self.event_fetching(done=True)
@@ -2680,6 +2842,16 @@ class OsmSearcher:
 
         if not isinstance(data, list):
             raise UpstreamRequestError("Nominatim search returned an invalid response.")
+
+        if any(
+            not isinstance(item, dict)
+            or "error" in item
+            or "lat" not in item
+            or "lon" not in item
+            or not _valid_coordinate_pair(item)
+            for item in data
+        ):
+            raise UpstreamRequestError("Nominatim search returned invalid place data.")
 
         logger.debug("Got result from Nominatim for: %s", query)
         # Cache the full result for this (query, format, limit) tuple.
@@ -2747,7 +2919,13 @@ class OsmSearcher:
         await self.event_resolving(done=True)
         if not data:
             return None
-        if not isinstance(data, dict):
+        if (
+            not isinstance(data, dict)
+            or "error" in data
+            or "lat" not in data
+            or "lon" not in data
+            or not _valid_coordinate_pair(data)
+        ):
             raise UpstreamRequestError("Nominatim reverse returned an invalid response.")
 
         self._cache.set(cache_key, data)
@@ -2784,20 +2962,18 @@ class OsmSearcher:
         if len(search) > 0:
             search += ";"
 
-        # "out geom;" is needed to get bounding box info of ways,
-        # so we can calculate the coordinates.
         query = f"""
             [out:json][timeout:__OSM_QL_TIMEOUT__][maxsize:67108864];
             (
                 {search}
             );
-            out geom;
+            out center;
         """
 
         logger.debug("Overpass query: %s", query)
         data = {"data": query}
         cache_key = _stable_cache_key(
-            "overpass_search",
+            "overpass_search_center_v1",
             {
                 "place": place,
                 "tags": tags,
@@ -2808,6 +2984,7 @@ class OsmSearcher:
         )
         cached_results = self._cache.get(cache_key)
         if cached_results is not None:
+            self._overpass_base_timestamp = cached_results.get("base_timestamp")
             return cached_results.get("nodes", []), cached_results.get("ways", [])
 
         try:
@@ -2820,6 +2997,10 @@ class OsmSearcher:
         # post-processed to remove extra data and add centered GPS coordinates.
         if not isinstance(payload, dict) or not isinstance(payload.get("elements"), list):
             raise UpstreamRequestError("Overpass returned an invalid response.")
+        if payload.get("remark"):
+            raise UpstreamRequestError("Overpass returned a partial/error response.")
+        if any(not isinstance(item, dict) for item in payload["elements"]):
+            raise UpstreamRequestError("Overpass returned malformed elements.")
         results = payload["elements"]
         nodes = []
         ways = []
@@ -2829,12 +3010,16 @@ class OsmSearcher:
             if "type" not in res or not thing_is_useful(res):
                 continue
             if res["type"] == "node":
+                if "lat" not in res or "lon" not in res or not _valid_coordinate_pair(res):
+                    raise UpstreamRequestError("Overpass returned a node with invalid coordinates.")
                 if thing_has_info(res):
                     nodes.append(res)
                 else:
                     things_missing_names.append(res)
-            elif res["type"] == "way":
+            elif res["type"] in {"way", "relation"}:
                 processed = process_way_result(res)
+                if processed is None:
+                    raise UpstreamRequestError("Overpass returned an element without a usable center.")
                 if processed is not None and thing_has_info(res):
                     ways.append(processed)
                 else:
@@ -2850,7 +3035,14 @@ class OsmSearcher:
                 updated = await self.nominatim_lookup_by_id(way_chunk)
                 ways = ways + updated
 
-        self._cache.set(cache_key, {"nodes": nodes, "ways": ways})
+        osm3s = payload.get("osm3s")
+        base_timestamp = osm3s.get("timestamp_osm_base") if isinstance(osm3s, dict) else None
+        self._cache.set(cache_key, {
+            "nodes": nodes,
+            "ways": ways,
+            "base_timestamp": base_timestamp,
+        })
+        self._overpass_base_timestamp = base_timestamp
         return nodes, ways
 
     async def get_things_nearby(
@@ -2976,6 +3168,9 @@ class OsmSearcher:
                 bbox_values = [float(value) for value in raw_bbox]
                 if not all(math.isfinite(value) for value in bbox_values):
                     raise ValueError
+                south, north, west, east = bbox_values
+                if not (-90 <= south <= north <= 90 and -180 <= west <= east <= 180):
+                    raise ValueError
             except (TypeError, ValueError):
                 return {
                     "place_display_name": place_display_name,
@@ -3040,6 +3235,9 @@ class OsmSearcher:
                     ),
                     "results_markdown": search_results,
                     "items": result_items,
+                    "provenance": osm_provenance(
+                        base_timestamp=getattr(self, "_overpass_base_timestamp", None)
+                    ),
                 },
             )
 
@@ -3338,6 +3536,7 @@ async def find_specific_place_impl(address_or_place: str, response_mode: str) ->
                 data={
                     "results_markdown": results_in_md or "# Search Results\n\nNo normalized results available.",
                     "items": items,
+                    "provenance": osm_provenance(),
                 },
             )
         else:
@@ -3460,7 +3659,7 @@ class OsmNavigator:
                 travel_time = round(float(summary.get("duration", 0.0)) / 60.0, 2)
             except (TypeError, ValueError):
                 travel_time = 0.0
-            travel_type = "car" if total_distance > 1.5 else "walking/biking"
+            travel_type = "walking" if route.get("profile") == "foot-walking" else "car"
 
             def create_step_instruction(step):
                 instruction = sanitize_external_text(step.get("instruction", "Proceed"), max_length=280)
@@ -3501,7 +3700,8 @@ class OsmNavigator:
                 f" - Total Distance: {total_distance} km\n"
                 f" - Travel Time: {str(travel_time)} minutes"
                 "\n\n"
-                "Navigation Instructions:\n\n"
+                f"Route provider: {ORS_ATTRIBUTION} ({ORS_PROVIDER_URL}). Place data: {OSM_ATTRIBUTION} ([ODbL]({OSM_LICENSE_URL}))."
+                "\n\nNavigation Instructions:\n\n"
                 f"{instructions}"
             )
 
@@ -3512,6 +3712,11 @@ class OsmNavigator:
                 query=query_payload,
                 data={
                     "travel_type": travel_type,
+                    "provenance": {
+                        **osm_provenance(),
+                        "routing_provider": ORS_ATTRIBUTION,
+                        "routing_provider_url": ORS_PROVIDER_URL,
+                    },
                     "total_distance_km": total_distance,
                     "travel_time_min": travel_time,
                     "steps": step_records,
@@ -3589,7 +3794,7 @@ class OsmNavigator:
                 travel_time = round(float(summary.get("duration", 0.0)) / 60.0, 2)
             except (TypeError, ValueError):
                 travel_time = 0.0
-            travel_type = "car" if total_distance > 1.5 else "walking/biking"
+            travel_type = "walking" if route.get("profile") == "foot-walking" else "car"
 
             steps: list[dict[str, object]] = []
             for seg_idx, segment in enumerate(route.get("segments", [])):
@@ -3621,6 +3826,8 @@ class OsmNavigator:
                 f" - Total Distance: {total_distance} km",
                 f" - Travel Time: {travel_time} min",
                 f" - Travel Type: {travel_type}",
+                f" - Route provider: {ORS_ATTRIBUTION} ({ORS_PROVIDER_URL})",
+                f" - Place data: {OSM_ATTRIBUTION} ([ODbL]({OSM_LICENSE_URL}))",
                 "",
                 "Steps:",
             ]
@@ -3637,6 +3844,11 @@ class OsmNavigator:
                 query=query_payload,
                 data={
                     "travel_type": travel_type,
+                    "provenance": {
+                        **osm_provenance(),
+                        "routing_provider": ORS_ATTRIBUTION,
+                        "routing_provider_url": ORS_PROVIDER_URL,
+                    },
                     "total_distance_km": total_distance,
                     "travel_time_min": travel_time,
                     "step_count": len(steps),
@@ -3677,7 +3889,6 @@ def _track(tool_name: str):
     def _decorator(fn):
         @functools.wraps(fn)
         async def _async_wrapper(*args, **kwargs):
-            record_tool_call(tool_name)
             try:
                 if tool_name in upstream_tool_names:
                     timeout_seconds = float(valves.upstream_tool_deadline_seconds)
@@ -3714,17 +3925,11 @@ def _track(tool_name: str):
                         _CALL_CLEANUP_BUDGET.reset(cleanup_token)
                 return await fn(*args, **kwargs)
             except Exception:
-                record_tool_error(tool_name)
                 raise
 
         @functools.wraps(fn)
         def _sync_wrapper(*args, **kwargs):
-            record_tool_call(tool_name)
-            try:
-                return fn(*args, **kwargs)
-            except Exception:
-                record_tool_error(tool_name)
-                raise
+            return fn(*args, **kwargs)
 
         if inspect.iscoroutinefunction(fn):
             return _async_wrapper
@@ -3821,6 +4026,7 @@ async def find_address_for_coordinates(
         data={
             "results_markdown": results_md or "# Search Results\n\nNo normalized results available.",
             "items": items,
+            "provenance": osm_provenance(),
         },
     )
 
@@ -4019,7 +4225,7 @@ async def geocode_place(
         status="ok",
         message=f"Found {len(candidates)} coordinate candidate(s).",
         query=query_payload,
-        data={"candidates": candidates, "primary": candidates[0]},
+        data={"candidates": candidates, "primary": candidates[0], "provenance": osm_provenance()},
     )
 
 
@@ -4227,7 +4433,7 @@ if valves.expose_legacy_aliases:
 
         _alias_handler.__name__ = f"find_{_category_key}_near_place_alias"
         if _tool_is_exposed(_tool_name):
-            mcp.tool(_tool_name)(_track(_tool_name)(_alias_handler))
+            _conditionally_register_tool(_tool_name)(_track(_tool_name)(_alias_handler))
 else:
     logger.info(
         "Legacy category aliases disabled (OSM_EXPOSE_LEGACY_ALIASES=false); "
@@ -4359,16 +4565,19 @@ def get_health() -> Annotated[
     str,
     Field(
         description=(
-            "JSON string with operational health: uptime, per-tool call/error "
-            "counters, last upstream failure, and cache path."
+            "JSON string with operational health: uptime, per-tool call/error/outcome "
+            "counters, last upstream failure, and cache state."
         )
     ),
 ]:
     """
     Return an operational health snapshot.
 
-    Read-only. Reports uptime, per-tool call/error counts, the most recent
-    upstream failure (kind/message/timestamp), and the active cache path.
+    Read-only. Reports uptime, per-tool call/error/outcome counts, the most recent
+    upstream failure (kind/message/timestamp), and cache state. Outcomes count
+    only terminal results observed by the MCP tool callback; an in-flight call
+    can make tool_calls temporarily exceed the sum of outcomes. Counters are
+    process-local and are not persisted.
     Designed for orchestrators and on-call triage.
     """
     snapshot = get_operational_snapshot()

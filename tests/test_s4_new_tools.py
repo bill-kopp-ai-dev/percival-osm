@@ -98,16 +98,24 @@ async def test_nearby_deadline_returns_controlled_error_and_cancels(
     reset_operational_metrics_for_tests()
 
     started = time.monotonic()
-    response = await handler("Fixtureville", "groceries", limit=3, radius=1000)
+    if tool_name in {tool.name for tool in await server_mod.mcp.list_tools()}:
+        response = await server_mod.mcp.call_tool(
+            tool_name,
+            {"place": "Fixtureville", "category": "groceries", "limit": 3, "radius": 1000},
+        )
+        response_text = response[0][0].text if isinstance(response, tuple) else response[0].text
+    else:
+        response_text = await handler("Fixtureville", "groceries", limit=3, radius=1000)
     elapsed = time.monotonic() - started
 
     assert elapsed < 0.5
     assert cancelled.is_set()
     assert client.closed
     assert searcher._http_client is None
-    assert json.loads(response)["status"] == "upstream_error"
+    assert json.loads(response_text)["status"] == "upstream_error"
     snapshot = get_operational_snapshot()
-    assert snapshot["tool_calls"][tool_name] == 1
+    if tool_name in {tool.name for tool in await server_mod.mcp.list_tools()}:
+        assert snapshot["tool_calls"][tool_name] == 1
     assert tool_name not in snapshot["tool_errors"]
     assert snapshot["last_upstream_failure"]["kind"] == "NearbySearch"
     assert "deadline exceeded" in snapshot["last_upstream_failure"]["message"]
@@ -215,11 +223,12 @@ async def test_other_upstream_tool_deadline_returns_controlled_error(monkeypatch
     monkeypatch.setattr(searcher, "nominatim_search", delayed_lookup)
     reset_operational_metrics_for_tests()
 
-    response = await server_mod.geocode_place("Fixtureville")
+    response = await server_mod.mcp.call_tool("osm_geocode", {"place": "Fixtureville"})
 
     assert cancelled.is_set()
     assert client.closed
-    assert json.loads(response)["status"] == "upstream_error"
+    response_text = response[0][0].text if isinstance(response, tuple) else response[0].text
+    assert json.loads(response_text)["status"] == "upstream_error"
     snapshot = get_operational_snapshot()
     assert snapshot["tool_calls"]["osm_geocode"] == 1
     assert "osm_geocode" not in snapshot["tool_errors"]

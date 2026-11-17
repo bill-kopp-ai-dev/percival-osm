@@ -1,6 +1,6 @@
 # Issue: health não contabiliza falhas controladas por tool
 
-- **Status:** aberta
+- **Status:** concluída — 2026-11-17
 - **Prioridade sugerida:** P2 — visibilidade operacional
 - **Identificada em:** reteste real do timeout MCP em 2026-10-31
 - **Verificada em:** 2026-11-16, auditoria documental sobre o estado real do código
@@ -73,4 +73,15 @@ histórico de resultados.
   terminal por invocação MCP e sem dupla contagem em aliases/delegações internas.
 - O plano preserva a semântica atual de `tool_errors` e inclui cancelamento,
   exceção propagada e respostas locais de health/version na matriz de aceite.
-- Issue permanece aberta até implementação e regressões pelo callback registrado.
+- Na auditoria de 2026-11-16, a issue ainda permanecia aberta; o encerramento
+  ocorreu após a implementação e as regressões registradas abaixo.
+
+## Encerramento — 2026-11-17
+
+- F6 implementada: `osm_get_health` agora inclui `tool_outcomes[tool][outcome]`,
+  medido uma vez no callback FastMCP registrado. `tool_errors` continua contando
+  apenas exceções propagadas; cancelamentos têm categoria própria.
+- `tests/test_f6_tool_outcomes.py`, `tests/test_s3_observability.py` e
+  `tests/test_s4_new_tools.py`: **30 passed**. As regressões passam por callbacks
+  MCP reais e cobrem `no_results`, `upstream_error`, exceção, cancelamento e
+  sucesso local. Contadores não armazenam dados da consulta e são process-local.
