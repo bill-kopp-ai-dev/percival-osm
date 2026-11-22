@@ -266,6 +266,51 @@ valves = Settings()
 user_valves = None
 
 
+_LOG_URL_RE = re.compile(r"https?://[^\s\"'<>]+", re.IGNORECASE)
+_LOG_SECRET_RE = re.compile(
+    r"(?i)([\"']?\b(?:[a-z0-9_]*api[_-]?key|[a-z0-9_]*access[_-]?token|[a-z0-9_]*auth(?:orization)?|[a-z0-9_]*token|password|secret)\b[\"']?\s*[=:]\s*[\"']?|\bBearer\s+)[^\s&,;\"']+"
+)
+
+
+def _redact_log_text(value: str) -> str:
+    """Remove URLs and common inline credentials before any log formatter sees them."""
+    value = _LOG_URL_RE.sub("[url redacted]", value)
+    return _LOG_SECRET_RE.sub(r"\1[redacted]", value)
+
+
+def _redact_log_value(value: Any) -> Any:
+    if isinstance(value, str):
+        return _redact_log_text(value)
+    if isinstance(value, dict):
+        return {
+            _redact_log_text(key) if isinstance(key, str) else key: _redact_log_value(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_log_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_redact_log_value(item) for item in value)
+    return value
+
+
+class _SensitiveDataFilter(logging.Filter):
+    """Sanitize formatted records and omit potentially sensitive tracebacks."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            record.msg = _redact_log_text(record.getMessage())
+            record.args = ()
+            for key, value in tuple(record.__dict__.items()):
+                if key not in {"msg", "message"}:
+                    record.__dict__[key] = _redact_log_value(value)
+        except Exception:
+            record.msg = "Log message redacted after formatting failure"
+            record.args = ()
+        record.exc_info = None
+        record.exc_text = None
+        return True
+
+
 class _JsonFormatter(logging.Formatter):
     """Emit log records as compact one-line JSON on stderr."""
 
@@ -307,6 +352,7 @@ def _configure_logging() -> None:
         root.removeHandler(h)
 
     handler = logging.StreamHandler(stream=sys.stderr)
+    handler.addFilter(_SensitiveDataFilter())
     fmt_kind = (valves.log_format or "plain").strip().lower()
     if fmt_kind == "json":
         handler.setFormatter(_JsonFormatter())
@@ -743,11 +789,9 @@ def record_security_event(event: str, **details: Any) -> None:
     with _SECURITY_METRICS_LOCK:
         _SECURITY_METRICS[key] = _SECURITY_METRICS.get(key, 0) + 1
 
-    sanitized_details = {
-        sanitize_external_text(str(k), max_length=60): sanitize_external_text(v, max_length=180)
-        for k, v in details.items()
-    }
-    logger.warning("SECURITY_EVENT %s details=%s", key, json.dumps(sanitized_details, ensure_ascii=False))
+    # Details may contain user input, coordinates, URLs, or credential-bearing
+    # request data. Keep only the bounded event category in operational logs.
+    logger.warning("SECURITY_EVENT %s", key)
 
 
 def get_security_metrics_snapshot() -> dict[str, int]:
@@ -2628,9 +2672,9 @@ class OsmSearcher:
                     thing["travel_type"] = "walking" if cached.get("profile") == "foot-walking" else "car"
 
             if nav_distance is not None:
-                logger.debug("Got nav distance for %s from cache", thing_id)
+                logger.debug("Got nav distance from cache")
             else:
-                logger.debug("Checking ORS for %s", thing_id)
+                logger.debug("Checking ORS route distance")
                 try:
                     nav_distance = await self._resolve_distance(
                         cache_key, origin, thing
@@ -2811,11 +2855,11 @@ class OsmSearcher:
         cached_full = self._cache.get(cache_key)
 
         if isinstance(cached_full, list):
-            logger.debug("Got nominatim search data for %s from cache", query)
+            logger.debug("Got Nominatim search data from cache")
             await self.event_resolving(done=True)
             return cached_full[:limit]
 
-        logger.debug("Searching Nominatim for: %s", query)
+        logger.debug("Searching Nominatim")
 
         url = urljoin(self.valves.nominatim_url, "search")
         params = {
@@ -2853,7 +2897,7 @@ class OsmSearcher:
         ):
             raise UpstreamRequestError("Nominatim search returned invalid place data.")
 
-        logger.debug("Got result from Nominatim for: %s", query)
+        logger.debug("Got result from Nominatim")
         # Cache the full result for this (query, format, limit) tuple.
         # Different limits get separate cache entries to avoid stale slicing.
         self._cache.set(cache_key, data)
@@ -2884,15 +2928,11 @@ class OsmSearcher:
         )
         cached = self._cache.get(cache_key)
         if isinstance(cached, dict):
-            logger.debug(
-                "Got nominatim reverse data for (%s, %s) from cache",
-                latitude,
-                longitude,
-            )
+            logger.debug("Got Nominatim reverse data from cache")
             await self.event_resolving(done=True)
             return cached
 
-        logger.debug("Reverse geocoding (%s, %s)", latitude, longitude)
+        logger.debug("Reverse geocoding with Nominatim")
         url = urljoin(self.valves.nominatim_url, "reverse")
         params = {
             "lat": latitude,
@@ -2939,7 +2979,7 @@ class OsmSearcher:
         post-processing is done on ways in order to add coordinates to
         them.
         """
-        logger.debug("Searching Overpass Turbo around origin %s", place)
+        logger.debug("Searching Overpass")
         headers = self.create_headers()
         if not headers:
             raise ValueError("Headers not set")
@@ -2970,7 +3010,7 @@ class OsmSearcher:
             out center;
         """
 
-        logger.debug("Overpass query: %s", query)
+        logger.debug("Submitting bounded Overpass query")
         data = {"data": query}
         cache_key = _stable_cache_key(
             "overpass_search_center_v1",
@@ -3156,7 +3196,7 @@ class OsmSearcher:
                 else:
                     place_display_name = place
             else:
-                logger.warning("Could not find display name for place: %s", place)
+                logger.warning("Could not resolve a display name for the requested place")
                 place_display_name = place
 
             await self.event_searching(category, place_display_name, done=False)
@@ -3183,7 +3223,7 @@ class OsmSearcher:
                 }
             bbox = dict(zip(("minlat", "maxlat", "minlon", "maxlon"), bbox_values))
 
-            logger.debug("Searching for %s near %s", category, place_display_name)
+            logger.debug("Searching for category %s", category)
             things_nearby = await self.get_things_nearby(
                 nominatim_result, place, tags, bbox, limit, radius
             )
@@ -3206,12 +3246,7 @@ class OsmSearcher:
                     "things": [],
                 }
 
-            logger.debug(
-                "Found %d %s results near %s",
-                len(things_nearby),
-                category,
-                place_display_name,
-            )
+            logger.debug("Found %d results for category %s", len(things_nearby), category)
 
             # Only print the full result instructions if we
             # actually have something.
@@ -3329,9 +3364,7 @@ async def do_osm_search(
             include_untrusted_warning=False,
         )
 
-    logger.debug(
-        "Searching for [%s] (%s, etc) near place: %s", category, tags[0], place
-    )
+    logger.debug("Searching for category %s", category)
     searcher = OsmSearcher(valves, user_valves, event_emitter)
     deadline_expired = False
     try:
@@ -3393,9 +3426,7 @@ async def do_osm_search_full(
             "things": [],
         }
 
-    logger.debug(
-        "Searching for [%s] (%s, etc) near place: %s", category, tags[0], place
-    )
+    logger.debug("Searching for category %s", category)
     searcher = OsmSearcher(valves, user_valves, event_emitter)
     deadline_expired = False
     try:
@@ -3976,7 +4007,7 @@ async def find_address_for_coordinates(
     Use when the user already has exact GPS coordinates and wants to know
     what exists at that location.
     """
-    ctx.info(f"Resolving [{latitude}, {longitude}] to address.")
+    ctx.info("Resolving coordinates to an address.")
     searcher = OsmSearcher(valves, user_valves)
     response_mode = normalize_response_mode(valves.response_mode, RESPONSE_MODE_COMPACT)
     query_payload = {
@@ -4066,7 +4097,7 @@ async def find_store_or_place_near_coordinates(
     Use when the user asks for a specific chain/entity or business type around
     known coordinates.
     """
-    ctx.info(f"Searching for '{store_or_business_name}' near {latitude},{longitude}")
+    ctx.info("Searching for a nearby business.")
     query = f"{store_or_business_name} {latitude},{longitude}"
     return await find_specific_place(query, ctx)
 
@@ -4097,7 +4128,7 @@ async def find_specific_place(
     Prefer this for unique entities ("where is X?"), not broad category
     discovery. For category/radius search, prefer `find_places_near_place`.
     """
-    ctx.info(f"[OSM] Searching for info on [{address_or_place}].")
+    ctx.info("[OSM] Looking up a specific place.")
     response_mode = normalize_response_mode(valves.response_mode, RESPONSE_MODE_COMPACT)
     return await find_specific_place_impl(address_or_place, response_mode=response_mode)
 
@@ -4129,7 +4160,7 @@ async def find_specific_place_detailed(
     Use for diagnostics, auditing, or automation workflows that benefit from
     richer contextual output.
     """
-    ctx.info(f"[OSM] Searching for detailed info on [{address_or_place}].")
+    ctx.info("[OSM] Looking up detailed place information.")
     return await find_specific_place_impl(address_or_place, response_mode=RESPONSE_MODE_DETAILED)
 
 
@@ -4255,11 +4286,7 @@ async def navigate_between_places(
     Use when the user asks for routing or travel estimation between two places.
     Returns summary plus route steps in sanitized text.
     """
-    logger.info(
-        "Navigating from [%s] to [%s].",
-        start_address_or_place,
-        destination_address_or_place,
-    )
+    logger.info("Navigation request started")
     navigator = OsmNavigator(valves, user_valves)
     return await navigator.navigate(
         start_address_or_place, destination_address_or_place

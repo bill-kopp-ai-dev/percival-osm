@@ -74,6 +74,7 @@ x-base-config: &base-config
     # who only need the server to render.
     USER_AGENT: ${USER_AGENT:-}
     FROM_HEADER: ${FROM_HEADER:-}
+    OSM_EXPOSED_TOOLS: ${OSM_EXPOSED_TOOLS:-osm_find_nearby,osm_find_place,osm_find_address,osm_geocode,osm_directions,osm_get_health,osm_get_security_metrics,osm_get_version}
     OSM_EXPOSE_LEGACY_ALIASES: ${OSM_EXPOSE_LEGACY_ALIASES:-true}
     OSM_REQUIRE_HTTPS_UPSTREAMS: ${OSM_REQUIRE_HTTPS_UPSTREAMS:-true}
     OSM_UPSTREAM_ALLOWED_HOSTS: ${OSM_UPSTREAM_ALLOWED_HOSTS:-nominatim.openstreetmap.org,overpass-api.de,api.heigit.org}

@@ -35,6 +35,15 @@
   `provider_not_configured`; distância haversine não é apresentada como rota.
 - Uma resposta válida vazia retorna `no_results`; indisponibilidade, timeout,
   HTTP 429/5xx ou resposta inutilizável retorna erro explícito.
+- `osm_get_health` inclui `tool_outcomes[tool][outcome]` para categorias
+  enumeradas (`ok`, `no_results`, `upstream_error`, `exception`, `cancelled`,
+  entre outras). `tool_errors` conta apenas exceções Python propagadas; outcomes
+  e security counters são em memória por processo, não histórico durável.
+- Logs vão a stderr e omitem entradas de busca/coordenadas, URLs, credenciais,
+  detalhes de exceção e tracebacks upstream. A policy entregue ao agente está
+  empacotada no resource `osm://security/nanobot-policy`.
+- Saídas incluem procedência/atribuição OSM; `straight_line_estimate` é apenas
+  estimativa e não distância viária.
 
 ## Mounts e cache
 

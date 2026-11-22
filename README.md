@@ -5,7 +5,7 @@
 [![Python](https://img.shields.io/badge/python-3.11+-yellow.svg)]()
 [![MCP](https://img.shields.io/badge/mcp-server-blue.svg)]()
 [![percival.OS](https://img.shields.io/badge/percival.OS-ecosystem-orange.svg)](https://github.com/bill-kopp-ai-dev/percival.OS)
-[![Tests](https://img.shields.io/badge/tests-74%20passed-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-pytest-brightgreen.svg)]()
 
 ---
 
@@ -27,7 +27,8 @@ production use inside `percival.OS_Dev`:
 - 3 **prompt primitives** to teach the agent which tool to call.
 - 2 **resource primitives** for live policy / category reference.
 - Structured logging to stderr (preserves the MCP stdio stream).
-- Per-tool call telemetry, token-bucket rate limiting for Nominatim (1 req/s).
+- Per-tool call/outcome telemetry, shared process-local provider budgets, and
+  public Nominatim at 1 req/s with no burst.
 - Input sanitization against prompt-injection, HTTPS-only upstreams, URL
   allow-listing, and an isolated `async` runtime.
 
@@ -63,7 +64,7 @@ core principles:
 | `osm_find_address` | Coordinates → address (via Nominatim `/reverse`) | the user has GPS and wants a place name |
 | `osm_geocode` | Address / place name → coordinates only | you only need lat/lon |
 | `osm_directions` | Route summary and structured step-by-step instructions A → B | route details are needed |
-| `osm_get_health` | Uptime, per-tool call/error counters, last failure | on-call triage |
+| `osm_get_health` | Uptime, per-tool call/error/outcome counters, cache state and last upstream failure category | on-call triage |
 | `osm_get_security_metrics` | Security counter snapshot | audit / incident response |
 | `osm_get_version` | Server version, process start time | deployment auditing |
 
@@ -194,7 +195,7 @@ OSM_RESPONSE_MODE=compact               # compact | detailed
 OSM_UPSTREAM_TOOL_DEADLINE_SECONDS=16    # end-to-end upstream tool limit (max 16)
 
 # Nominatim usage policy — both must be non-empty
-USER_AGENT=percival-osm/0.4.1 (you@example.com)
+USER_AGENT=percival-osm/0.5.0 (you@example.com)
 FROM_HEADER=you@example.com
 
 # OpenRouteService routing (required for route/directions tools; without it,
@@ -236,21 +237,26 @@ stream). Switch to one-line JSON via:
 OSM_LOG_FORMAT=json OSM_LOG_LEVEL=INFO
 ```
 
-Sample JSON record:
+Sample JSON record (operational messages omit queries and locations):
 
 ```json
-{"ts": "2026-07-17T15:00:00-0300", "level": "INFO", "logger": "percival-osm", "msg": "Navigating from [A] to [B]."}
+{"ts": "2026-07-17T15:00:00-0300", "level": "INFO", "logger": "percival-osm", "msg": "Navigation request started."}
 ```
 
-The format is stable: `ts` (ISO 8601 local), `level`, `logger`, `msg`, plus
-any structured `extra={…}` fields attached via `logger.info("…", extra=…)`.
+The format is stable: `ts` (ISO 8601 local), `level`, `logger`, and `msg`.
+URLs, common inline credentials, exception details and tracebacks are removed;
+security-event logs retain the event category but not request details.
 
 ### Health & version
 
 - `osm_get_version` — package version, server name, process start (ISO 8601).
-- `osm_get_health` — uptime in seconds, per-tool call/error counters, the
-  most recent upstream failure (`kind`, `message`, `ts`), and the active
-  cache path.
+- `osm_get_health` — uptime in seconds, per-tool call/error/outcome counters,
+  cache mode/degradation/I/O counters, and the most recent upstream failure
+  category/time. Counters are in-memory per process; calls in progress may not
+  yet have an outcome, and health can snapshot before counting its own outcome.
+- Outcomes: `ok`, `no_results`, `invalid_request`, `provider_not_configured`,
+  `config_error`, `upstream_error`, `error`, `exception`, `cancelled`, and
+  `unknown`. `tool_errors` counts only propagated Python exceptions.
 - `osm_get_security_metrics` — security counter snapshot (URL policy
   blocks, auth failures, upstream failures, etc).
 
@@ -466,7 +472,7 @@ PYTHONPATH=src .venv/bin/python -m percival_osm_mcp --mode streamable-http --por
 ### Tests
 
 ```bash
-# Run the full suite (74 tests, <1s)
+# Run the full suite
 uv run pytest -v
 
 # Targeted suites
@@ -482,7 +488,7 @@ The suite covers:
 - Output sanitization (HTML, markdown, control characters).
 - Prompt-injection regression corpus.
 - Observability primitives (health, version, operational telemetry).
-- Token-bucket rate-limit semantics (burst, throttle-after-burst, disabled).
+- Public Nominatim no-burst spacing, shared provider limits and cooldowns.
 - MCP prompt/resource registration and content integrity.
 - Bug-fix regressions for: `main()` block, `@_track` decorator coverage,
   shared `httpx.AsyncClient`, single-flight ORS, static dead-code removal.
@@ -515,6 +521,12 @@ Every blocking or failure path increments a counter exposed via
 ## 📝 Changelog
 
 ### Unreleased
+- Redact search text, coordinates, request URLs, credentials and tracebacks from
+  operational logs; security events retain only their category.
+- Ship the canonical integration policy inside the wheel for
+  `osm://security/nanobot-policy`; expose configurable tools through Compose.
+- Distinguish process-local per-tool outcomes in `osm_get_health` and document
+  result provenance, provider limits and authenticated HTTP behavior.
 - Require explicit `NOMINATIM_URL` selection; enforce shared in-process
   provider budgets, coalescing and cooldowns, and bounded Overpass work.
 - Default MCP exposure reduced to eight curated tools using the

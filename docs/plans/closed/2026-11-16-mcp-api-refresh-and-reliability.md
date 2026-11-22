@@ -1,7 +1,7 @@
 # Plano — atualização das APIs e confiabilidade do Percival OSM MCP
 
-- **Data / revisão:** 2026-11-17 / 1.4
-- **Estado:** em execução; F2/F3/F4/F5/F6 implementadas e verificadas, F1 aguarda validação em Python 3.11.
+- **Data / revisão:** 2026-11-17 / 1.5
+- **Estado:** F1–F7 implementadas e verificadas; campanha de implementação concluída. Release/deploy continuam marcos separados.
 - **Owner / executor / decisor:** Bill Kopp, Positronic Bean Labs.
 - **Objetivo:** resolver as três issues abertas e atualizar a integração com os
   provedores realmente utilizados, preservando o contrato MCP e os controles de
@@ -9,7 +9,7 @@
 - **Base examinada:** commit `42f1cf2f09739e8fe270118f6e2fd920b3762179`, versão
   `0.5.0`; revisão documental anterior versionada em `eda3de3`. Referências de
   linha abaixo pertencem a essa base de código, não a uma implementação futura.
-- **Entradas:** [relatório de 2026-11-12](../reports/relatorio_openstreetmap_apis_autenticacao_2026-11-12.md),
+- **Entradas:** [relatório de 2026-11-12](../../reports/relatorio_openstreetmap_apis_autenticacao_2026-11-12.md),
   issues abertas e fontes consultadas diretamente em 2026-11-16 (§10).
 - **Acompanhamento:** as caixas deste documento são a fonte de estado da
   campanha — painel por fase em [Painel de execução](#execucao) e tarefas em
@@ -23,17 +23,16 @@ O plano é executado fase a fase. As listas com caixas em [§4](#sec-4) são a f
 única de estado: marque cada tarefa ao concluí-la e marque a caixa da fase somente
 depois de verificar o aceite daquela fase.
 
-**Estado atual:** F1 implementada, aguardando a validação de startup em Python
-3.11; F2, F3, F4, F5 e F6 implementadas e verificadas. Próximo incremento:
-completar F1 com Python 3.11 ou avançar F7.
+**Estado atual:** F1–F7 implementadas e verificadas. O incremento de implementação
+terminou; qualquer candidata Docker, release ou deploy é um marco separado.
 
-- [ ] [F1](#f1) — Migração ORS e baseline portável — P1 — R1, R11
+- [x] [F1](#f1) — Migração ORS e baseline portável — P1 — R1, R11
 - [x] [F2](#f2) — Cache resiliente e fixtures isolados — P1 — R2
 - [x] [F3](#f3) — Orçamento único de prazo, transporte e cancelamento — P1 — R2, R5, R6
 - [x] [F4](#f4) — Políticas dos provedores e controle agregado — P1 — R4, R7
 - [x] [F5](#f5) — Resultados compatíveis e procedência — P2 — R7–R9
 - [x] [F6](#f6) — Telemetria dos outcomes MCP — P2 — R3
-- [ ] [F7](#f7) — Documentação, pacote e verificação integrada — P2 — R9–R11
+- [x] [F7](#f7) — Documentação, pacote e verificação integrada — P2 — R9–R11
 
 **Convenções de acompanhamento**
 
@@ -220,11 +219,19 @@ prefixo. Host não autorizado é rejeitado; alias `ORS_URL` funciona. As duas
 regressões `tests/test_s4_new_tools.py -k missing_ors_provider` passaram e
 comprovam `provider_not_configured` antes de geocodificar. `docker compose config
 --quiet`, import/startup local em Python 3.12.15 e `git diff --check` passaram.
-Não foi feita chamada ao serviço ORS real. Este ambiente não tem interpretador
-Python 3.11; por isso a caixa de conclusão da fase permanece pendente até essa
-verificação.
+Na verificação inicial ainda não havia interpretador Python 3.11 e a fase ficou
+pendente; o complemento abaixo registra a validação posterior.
 
-- [ ] **F1 concluída** — aceite verificado e evidência registrada.
+**Complemento de verificação (2026-11-17):** o interpretador Python 3.11.14
+ficou disponível no ambiente de validação. Com o checkout instalado em modo
+editable, a suíte completa passou em Python 3.11; isso inclui inicialização e
+handshake stdio com `tools/list` e `osm_get_health`. A suíte completa também
+passou em Python 3.12.15, a versão da imagem de runtime declarada no Dockerfile.
+O wheel 0.5.0 instalou e serviu o resource de policy em Python 3.11. Assim, o
+critério de compatibilidade/startup pendente foi verificado; não houve chamada
+ORS real nem build de imagem nesta campanha.
+
+- [x] **F1 concluída** — aceite verificado e evidência registrada.
 
 <a id="f2"></a>
 
@@ -315,7 +322,7 @@ cleanup, payload/perfil ORS e outcomes 401/403/429/503 sem retry. Regressões
 F1, F2, S1, S3, S4 e S5: **84 passed** em Python 3.12.12 via container `uv`, lock
 congelado; a suíte completa passou: **124 passed**. Sem acesso a upstream real.
 Decisão registrada em
-[ADR de transporte assíncrono](../ADR-2026-11-17-async-upstream-transport.md).
+[ADR de transporte assíncrono](../../ADR-2026-11-17-async-upstream-transport.md).
 
 - [x] **F3 concluída** — aceite verificado e evidência registrada.
 
@@ -498,18 +505,18 @@ possuem outcome terminal. Verificação focada:
 
 **Tarefas**
 
-- [ ] **F7.1** Remover entradas pessoais de logs DEBUG/`ctx.info` e erros com
+- [x] **F7.1** Remover entradas pessoais de logs DEBUG/`ctx.info` e erros com
   traceback upstream; manter tool, provedor e categoria operacional. Testar
   redaction com dados sentinela, inclusive URLs com tokens no path/query de
   provedores.
-- [ ] **F7.2** Disponibilizar política real no resource existente, empacotada sob
+- [x] **F7.2** Disponibilizar política real no resource existente, empacotada sob
   `src/` e incluída no wheel. Validar no pacote instalado; não usar lookup no
   checkout como prova de que o resource estará no container.
-- [ ] **F7.3** Alinhar README, `.env.example` (documentação, sem carregamento de
+- [x] **F7.3** Alinhar README, `.env.example` (documentação, sem carregamento de
   arquivo), Compose, perfil de integração, prompts/resources e
   `servers/percival-osm/{server.yaml,tools.json,readme.md}` aos novos contratos.
   Atualizar a documentação de burst antigo, auth e limites de uso.
-- [ ] **F7.4** Revisar dependências pelo risco concreto: lock consistente com
+- [x] **F7.4** Revisar dependências pelo risco concreto: lock consistente com
   transporte escolhido, Python 3.11 e build. Evitar atualização indiscriminada
   ou MCP 2.x nesta campanha. Definir versão de release somente após estabilizar
   o escopo.
@@ -520,9 +527,29 @@ Tools/list mantém a exposição configurada e stdout só JSON-RPC. Para uma fut
 candidata Docker que altere runtime, usar o smoke existente uma vez e evidência
 de imagem correspondente, sem duplicar a mesma prova em vários gestores.
 
-**Evidência:** _(a registrar)_
+**Evidência (2026-11-17):** logs DEBUG e `ctx.info` deixaram de incluir queries,
+endereços e coordenadas; o filtro central remove URLs, credenciais inline e
+tracebacks, enquanto eventos de segurança registram somente a categoria. Testes
+com sentinelas cobrem URL com token em path/query, `ORS_API_KEY`, credentials e
+request details. O resource de policy agora falha alto se o documento empacotado
+estiver ausente (sem placeholder), e o wheel contém
+`percival_osm_mcp/docs/security/nanobot-policy.md`. `uv build` gerou sdist e
+wheel `0.5.0`; instalação isolada do wheel e leitura via URI MCP passaram em
+Python 3.11 e 3.12.
 
-- [ ] **F7 concluída** — aceite verificado e evidência registrada.
+README, `.env.example`, Compose, perfil de integração, prompts, policy resource
+e artefatos `servers/percival-osm/{server.yaml,tools.json,readme.md}` agora
+descrevem outcomes, procedência, auth HTTP, limites sem burst e a configuração
+atual. Compose encaminha `OSM_EXPOSED_TOOLS`; regressão confere a lista default
+exata de oito tools via handshake stdio. Um teste local HTTP faz initialize,
+`tools/list`, `osm_get_health` e leitura do resource sem acessar upstream.
+`docker compose config --quiet`, `uv lock --check` e `git diff --check` passaram.
+Suíte completa: **163 passed** em Python 3.12.15 e em Python 3.11.14. Não houve
+mudança de dependências nem bump de versão; a versão continua `0.5.0` até haver
+decisão explícita de release. Sem chamada a upstream e sem build/smoke de imagem
+Docker nesta etapa; o smoke segue associado a uma futura candidata de imagem.
+
+- [x] **F7 concluída** — aceite verificado e evidência registrada.
 
 <a id="sec-5"></a>
 
@@ -551,7 +578,7 @@ agendar uma atualização de runtime.
 
 | Issue | Trabalho necessário | Evidência para fechar |
 |---|---|---|
-| [Migração ORS](../issues/2026-11-04-ors-api-endpoint-migration.md) | F1 | URL final POST/json correta, prefixo/override/allowlist, exemplos coerentes e ausência de chave controlada. |
+| [Migração ORS](../issues/closed/2026-11-04-ors-api-endpoint-migration.md) | F1 | URL final POST/json correta, prefixo/override/allowlist, exemplos coerentes e ausência de chave controlada. |
 | [Cache / cleanup](../issues/closed/2026-11-16-cache-persist-failure-escapes-as-raw-exception.md) | F2 + F3 concluídas | Falhas de I/O e cache inválido sem exceção crua; close/cancelamento dentro do orçamento; regressões isoladas em `tmp_path`. Issue movida para `closed/` após 84 testes focados aprovados em 2026-11-17. |
 | [Outcomes controlados](../issues/closed/2026-10-31-controlled-tool-failure-outcomes-not-counted.md) | F6 concluída | Matriz via callbacks MCP validada em `test_f6_tool_outcomes.py`; issue movida para `closed/` em 2026-11-17. |
 | Resultados compatíveis e procedência (R7–R9) | F5 | `tests/test_f5_results_provenance.py`; não havia issue aberta específica para esta fase, portanto nenhuma issue foi movida. |
@@ -593,17 +620,18 @@ feitos benchmark, build de release ou deploy nesta execução.
    gateway/rede e política de destino específica. Não abrir uma exceção genérica
    para hosts privados ou ampliar allowlist por descoberta automática.
 
-O transporte assíncrono ORS e o ciclo de vida compartilhado são recomendações
-arquiteturais deste plano, ainda propostas. Ao adotá-los na implementação,
-registrar a decisão durável em um único ADR; não exigir ADR para cada correção.
+O transporte assíncrono ORS e o ciclo de vida compartilhado foram adotados e
+registrados no [ADR de transporte assíncrono](../../ADR-2026-11-17-async-upstream-transport.md).
+Não é necessário criar ADR por correção rotineira.
 
 <a id="sec-9"></a>
 
 ## 9. Handoff e próxima ação
 
-Próximo incremento recomendado: validar startup em **Python 3.11** para fechar
-F1 ou avançar F7. F2/F3/F4/F5/F6 estão concluídas. Bill é o único decisor; não há revisão
-externa ou aceite duplicado como condição de conclusão.
+F1–F7 estão concluídas. Build de imagem candidata, release e deploy continuam
+separados da campanha e dependem de solicitação específica do operador. Bill é o
+único decisor; não há revisão externa ou aceite duplicado como condição de
+conclusão.
 
 O acompanhamento de execução está no [Painel de execução](#execucao) e nas
 caixas de [§4](#sec-4): cada tarefa concluída é marcada individualmente e a

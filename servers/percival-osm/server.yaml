@@ -78,6 +78,15 @@ config:
         Additional gate for legacy category aliases. When false, no aliases
         are exposed even if selected by OSM_EXPOSED_TOOLS (default: true).
       example: "true"
+    - name: OSM_NOMINATIM_RATE_LIMIT_RPS
+      description: >-
+        Public Nominatim permits at most 1 request per second; a higher value
+        or a disabled rate limit is rejected.
+      example: "1.0"
+    - name: OSM_NOMINATIM_RATE_LIMIT_BURST
+      description: >-
+        Public Nominatim requires burst 1 (no burst allowance).
+      example: "1"
     - name: OSM_EXPOSED_TOOLS
       description: >-
         Comma-separated list of MCP tools to expose. Defaults to the eight
@@ -89,6 +98,11 @@ config:
         Bearer token required when the HTTP transport is bound to a
         non-loopback host. Leave empty for stdio or loopback HTTP.
       example: ""
+    - name: ORS_INSTANCE
+      description: >-
+        Optional explicitly allowlisted OpenRouteService-compatible base URL;
+        ORS_URL is retained as a compatibility alias.
+      example: https://api.heigit.org/openrouteservice
   parameters:
     type: object
     properties:

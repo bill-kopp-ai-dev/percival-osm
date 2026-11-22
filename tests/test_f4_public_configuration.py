@@ -315,5 +315,16 @@ async def test_stdio_handshake_with_explicit_backend(tmp_path):
     async with stdio_client(params) as (read_stream, write_stream):
         async with ClientSession(read_stream, write_stream) as session:
             await session.initialize()
+            tools = await session.list_tools()
+            assert {tool.name for tool in tools.tools} == {
+                "osm_find_nearby",
+                "osm_find_place",
+                "osm_find_address",
+                "osm_geocode",
+                "osm_directions",
+                "osm_get_health",
+                "osm_get_security_metrics",
+                "osm_get_version",
+            }
             result = await session.call_tool("osm_get_health", {})
             assert not result.isError

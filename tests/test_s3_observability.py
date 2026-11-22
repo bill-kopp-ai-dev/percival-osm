@@ -14,12 +14,14 @@ from percival_osm_mcp.server import (
     SERVER_VERSION,
     Settings,
     _JsonFormatter,
+    _SensitiveDataFilter,
     _configure_logging,
     get_health,
     get_operational_snapshot,
     get_security_metrics_snapshot,
     get_version,
     record_tool_call,
+    record_security_event,
     record_upstream_failure,
     reset_operational_metrics_for_tests,
     reset_security_metrics_for_tests,
@@ -55,6 +57,40 @@ def test_json_formatter_emits_required_fields() -> None:
     assert payload["logger"] == "percival-osm"
     assert payload["msg"] == "hello world"
     assert "ts" in payload
+
+
+def test_log_filter_redacts_urls_credentials_and_tracebacks() -> None:
+    sentinel = "f7-private-sentinel"
+    record = logging.LogRecord(
+        name="percival-osm",
+        level=logging.ERROR,
+        pathname=__file__,
+        lineno=1,
+        msg="upstream failed at %s with ORS_API_KEY=%s and token=%s",
+        args=(f"https://provider.invalid/{sentinel}?access_token={sentinel}", sentinel, sentinel),
+        exc_info=None,
+    )
+    record.request_data = {"url": f"https://provider.invalid/{sentinel}?token={sentinel}"}
+
+    assert _SensitiveDataFilter().filter(record)
+    rendered = record.getMessage()
+    assert sentinel not in rendered
+    assert "https://" not in rendered
+    assert "[url redacted]" in rendered
+    assert sentinel not in json.dumps(record.request_data)
+
+
+def test_security_event_does_not_log_request_details(caplog) -> None:
+    sentinel = "f7-private-sentinel"
+    with caplog.at_level(logging.WARNING, logger="percival-osm"):
+        record_security_event(
+            "upstream_error",
+            query=sentinel,
+            url=f"https://provider.invalid/private/{sentinel}?token={sentinel}",
+        )
+
+    assert sentinel not in caplog.text
+    assert "SECURITY_EVENT upstream_error" in caplog.text
 
 
 def test_configure_logging_can_switch_to_json() -> None:

@@ -74,7 +74,7 @@ async def test_read_categories_resource():
         rendered = contents
     else:
         rendered = "\n".join(
-            item if isinstance(item, str) else getattr(item, "text", str(item))
+            item if isinstance(item, str) else getattr(item, "text", getattr(item, "content", str(item)))
             for item in contents
         )
     for key in ("food", "groceries", "pharmacies", "public_transport"):
@@ -90,14 +90,14 @@ async def test_read_security_policy_resource_returns_text():
         rendered = contents
     else:
         rendered = "\n".join(
-            item if isinstance(item, str) else getattr(item, "text", str(item))
+            item if isinstance(item, str) else getattr(item, "text", getattr(item, "content", str(item)))
             for item in contents
         )
-    # The policy file ships with this server; if the bundled copy is
-    # unavailable the resource returns a placeholder. Either is acceptable
-    # for the test, as long as something non-empty comes back.
-    assert len(rendered) > 20
-    assert "placeholder" in rendered.lower() or "policy" in rendered.lower()
+    assert "# Percival OSM MCP — security and use policy" in rendered
+    normalized = " ".join(rendered.split())
+    assert "one request per second" in normalized
+    assert "MCP_OSM_AUTH_TOKEN" in normalized
+    assert "placeholder" not in normalized.lower()
 
 
 def test_primitives_module_exposes_public_api():

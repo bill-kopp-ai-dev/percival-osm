@@ -1,6 +1,6 @@
 # Issue: migrar o endpoint legado do OpenRouteService
 
-- **Status:** aberta — implementação ORS feita; conclusão F1 aguarda verificação Python 3.11
+- **Status:** concluída — implementação e critérios de aceite verificados em 2026-11-17
 - **Prioridade sugerida:** P1 — compatibilidade das rotas com endpoint descontinuado
 - **Identificada em:** 2026-11-04, revisão do runtime `osm` após falha de rota
 - **Verificada em:** 2026-11-16, auditoria documental sobre o estado real do código
@@ -106,14 +106,15 @@ conforme o novo endpoint documentado pelo provedor.
 
 ## Encaminhamento — 2026-11-16
 
-- Implementação proposta em [F1 do plano de atualização MCP](../plans/2026-11-16-mcp-api-refresh-and-reliability.md).
+- Implementação proposta em [F1 do plano de atualização MCP](../../plans/closed/2026-11-16-mcp-api-refresh-and-reliability.md).
 - Corrigida a indicação de formato da auditoria: `ors_directions` usa o default
   `format='json'` do SDK 2.3.3, compatível com o parsing atual de `routes[]`.
   A migração de base URL não exige mudar para o envelope GeoJSON.
 - O anúncio oficial de migração e o cronograma foram consultados novamente em
   2026-11-16; a disponibilidade do hostname legado continua sem teste direto.
 - Na revisão de 2026-11-16, a issue permanecia aberta até implementação e
-  verificação.
+  verificação. A implementação e a verificação subsequentes estão registradas
+  abaixo.
 
 ## Implementação parcial e verificação — 2026-11-17
 
@@ -134,3 +135,15 @@ conforme o novo endpoint documentado pelo provedor.
   pendência para concluir a fase F1 e fechar esta issue. Nenhuma requisição
   autenticada ao serviço ORS real foi feita; a evidência do endpoint é de captura
   determinística.
+
+## Conclusão — 2026-11-17
+
+- F1 foi concluída, incluindo a verificação posterior da suíte completa em
+  Python 3.11.14 e 3.12.15; o complemento de evidência está no plano referenciado
+  acima. A captura HTTP determinística confirmou a URL de Directions no novo
+  host, e os testes cobriram prefixo/override, allowlist e ausência de chave antes
+  da geocodificação.
+- Os critérios da issue foram atendidos. Não houve chamada autenticada ao ORS
+  real; isso não é requisito para o aceite local e não se afirma disponibilidade
+  do serviço externo.
+- Issue movida para `docs/issues/closed/`.

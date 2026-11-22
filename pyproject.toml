@@ -22,6 +22,9 @@ percival-osm-mcp = "percival_osm_mcp:main"
 [tool.hatch.build.targets.wheel]
 packages = ["src/percival_osm_mcp"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"src/percival_osm_mcp/docs/security/nanobot-policy.md" = "percival_osm_mcp/docs/security/nanobot-policy.md"
+
 [dependency-groups]
 dev = [
   "bandit>=1.8.0",

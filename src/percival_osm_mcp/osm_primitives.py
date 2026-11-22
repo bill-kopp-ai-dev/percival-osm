@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import logging
 from importlib import resources
-from pathlib import Path
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
@@ -131,6 +130,11 @@ Hard rules:
 - If the response says `status: "config_error"`, the server is missing a
   required setting (e.g. `ORS_API_KEY`). Tell the user, do not retry.
 - If the response says `status: "no_results"`, just say you found nothing.
+- Preserve `© OpenStreetMap contributors` attribution and available provenance.
+- When `distance_method` is `straight_line_estimate`, call it an estimate, not a
+  route distance. `travel_distance_km` is the routed distance when available.
+- Do not treat `upstream_error`, `provider_not_configured`, `config_error`,
+  `error`, `cancelled`, or `unknown` as an empty result or successful route.
 """
 
 
@@ -170,23 +174,8 @@ def register_prompts(mcp: FastMCP) -> None:
 
 
 def _read_package_text(rel_path: str) -> str:
-    """Load a UTF-8 text file shipped with the package.
-
-    Falls back to ``Path`` lookup against the source tree (useful for
-    editable installs) and finally raises FileNotFoundError so the caller
-    can decide how to surface the failure.
-    """
-    try:
-        return (
-            resources.files("percival_osm_mcp")
-            .joinpath(rel_path)
-            .read_text(encoding="utf-8")
-        )
-    except (FileNotFoundError, ModuleNotFoundError, AttributeError):
-        candidate = Path(__file__).resolve().parent.parent.parent / rel_path
-        if candidate.is_file():
-            return candidate.read_text(encoding="utf-8")
-        raise
+    """Load UTF-8 text data from the installed Python package."""
+    return resources.files("percival_osm_mcp").joinpath(rel_path).read_text(encoding="utf-8")
 
 
 _CATEGORIES_RESOURCE = """\
@@ -259,16 +248,7 @@ def register_resources(mcp: FastMCP) -> None:
     )
     async def osm_security_policy_resource() -> str:
         """Return the nanobot security policy shipped with the package."""
-        try:
-            return _read_package_text("docs/security/nanobot-policy.md")
-        except FileNotFoundError:
-            logger.warning("nanobot-policy.md not found; returning placeholder")
-            return (
-                "# Percival-OSM Nanobot Policy\n\n"
-                "The bundled policy document is not available in this "
-                "installation. Refer to the project README for the canonical "
-                "policy text."
-            )
+        return _read_package_text("docs/security/nanobot-policy.md")
 
     logger.debug("Registered 2 MCP resource primitives")
 

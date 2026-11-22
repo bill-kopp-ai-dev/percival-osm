@@ -14,7 +14,10 @@ OpenRouteService APIs.
 - 2 resource primitives (`osm://categories`,
   `osm://security/nanobot-policy`) for live policy / category reference.
 - Strict URL allow-list, HTTPS-only upstreams, prompt-injection
-  sanitization, and a 1 req/s rate limit on Nominatim.
+  sanitization, no-burst 1 req/s public Nominatim limit, and bounded
+  process-local provider budgets.
+- `osm_get_health` reports bounded per-tool outcomes and cache state. Logs
+  omit queries, locations, request URLs, credentials, and exception tracebacks.
 - Privacy-respecting: no commercial tracking; cache file is
   permission-locked to 0600 and confined to `OSM_CACHE_ALLOWED_DIRS`.
 
@@ -43,6 +46,11 @@ Optional:
 - `ORS_API_KEY` — OpenRouteService key required by routing tools. Without it,
   `osm_navigate` and `osm_directions` return `provider_not_configured`.
 - `MCP_OSM_AUTH_TOKEN` — bearer token for non-loopback HTTP transport.
+- `ORS_INSTANCE` (`ORS_URL` compatibility alias) — optional explicitly
+  allowlisted OpenRouteService-compatible base URL.
+- `OSM_NOMINATIM_RATE_LIMIT_RPS` and
+  `OSM_NOMINATIM_RATE_LIMIT_BURST` — public Nominatim requires `<=1` req/s and
+  burst `1`; separate processes still need a shared application-level gateway.
 - `OSM_EXPOSED_TOOLS` — comma-separated list of tool names; defaults to the
   eight curated names in `tools.json`. Set to `all` to expose all handlers.
 - `OSM_EXPOSE_LEGACY_ALIASES` — additional gate for category aliases (default
@@ -56,7 +64,8 @@ https://github.com/bill-kopp-ai-dev/percival-osm
 See especially:
 
 - `README.md` — tool catalogue, configuration, and threat model.
-- `docs/security/nanobot-policy.md` — minimum-safe integration baseline.
+- `osm://security/nanobot-policy` — security and provider-use policy shipped
+  inside the wheel and returned by the MCP resource.
 - `docs/security/threat-model.md` — trust boundaries and controls.
 
 ## License

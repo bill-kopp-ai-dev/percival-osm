@@ -102,6 +102,15 @@ def test_compose_passes_ors_instance_and_uses_heigit_default() -> None:
     assert "api.openrouteservice.org" not in environment["OSM_UPSTREAM_ALLOWED_HOSTS"]
 
 
+def test_compose_forwards_configured_tool_exposure() -> None:
+    import yaml
+
+    compose = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
+    environment = compose["services"]["mcp-osm"]["environment"]
+    assert environment["OSM_EXPOSED_TOOLS"].startswith("${OSM_EXPOSED_TOOLS:-")
+    assert "osm_get_health" in environment["OSM_EXPOSED_TOOLS"]
+
+
 def test_dockerfile_drops_capabilities_in_compose() -> None:
     """Verify compose also drops ALL capabilities and pins no-new-privileges."""
     content = COMPOSE.read_text(encoding="utf-8")

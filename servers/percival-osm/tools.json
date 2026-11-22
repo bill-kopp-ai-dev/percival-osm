@@ -42,7 +42,7 @@
   },
   {
     "name": "osm_get_health",
-    "description": "Operational health snapshot: uptime, per-tool call/error counters, last upstream failure, cache path.",
+    "description": "Operational health snapshot: uptime, per-tool call/error/outcome counters, cache state and latest upstream failure category. Counters are process-local.",
     "arguments": []
   },
   {
