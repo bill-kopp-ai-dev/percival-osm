@@ -151,7 +151,7 @@ async def test_registered_nearby_timeout_reaches_mcp_caller(monkeypatch) -> None
             finally:
                 overpass_cancelled.set()
 
-        def stream(self, method, url, params=None, headers=None):
+        def stream(self, method, url, params=None, headers=None, timeout=None):
             return _stream_via_fake_get(self, url, params, headers)
 
         async def aclose(self):
@@ -298,7 +298,7 @@ async def test_geocode_returns_coordinates(monkeypatch) -> None:
 
             return Resp()
 
-        def stream(self, method, url, params=None, headers=None):
+        def stream(self, method, url, params=None, headers=None, timeout=None):
             return _stream_via_fake_get(self, url, params, headers)
 
         async def aclose(self):

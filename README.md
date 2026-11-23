@@ -257,6 +257,14 @@ security-event logs retain the event category but not request details.
 - Outcomes: `ok`, `no_results`, `invalid_request`, `provider_not_configured`,
   `config_error`, `upstream_error`, `error`, `exception`, `cancelled`, and
   `unknown`. `tool_errors` counts only propagated Python exceptions.
+- `last_upstream_failure` may also carry the **stage** that failed or consumed
+  the deadline (`geocode`, `overpass`, `enrich`, `route`, `rank`, `render`,
+  `cleanup`), a bounded **reason** (`http_error`, `timeout`,
+  `transport_error`, `invalid_response`, `partial_response`, `cooldown`,
+  `deadline_exceeded`, `validation_error`, `cancelled`), the HTTP status when
+  one is known, and the per-stage duration breakdown. The vocabulary is fixed
+  and carries no upstream content: no URL, header, credential, queried place,
+  Overpass query, exception text, or response body.
 - `osm_get_security_metrics` — security counter snapshot (URL policy
   blocks, auth failures, upstream failures, etc).
 

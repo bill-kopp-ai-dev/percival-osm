@@ -1,10 +1,22 @@
 import asyncio
 import json
+import time
 
 import httpx
 import pytest
 
 from percival_osm_mcp import server as server_mod
+
+
+class _RecordingTransport(httpx.AsyncBaseTransport):
+    """Records the timeout httpx applies to each outgoing request."""
+
+    def __init__(self):
+        self.timeouts = []
+
+    async def handle_async_request(self, request):
+        self.timeouts.append(request.extensions.get("timeout", {}))
+        return httpx.Response(200, json=[], request=request)
 
 
 def settings_for(tmp_path, **overrides):
@@ -135,3 +147,43 @@ async def test_ors_provider_failures_are_controlled_without_retry(
             {"lat": 52.0, "lon": 13.0}, {"lat": 52.001, "lon": 13.002}
         )
     assert attempts == 1
+
+
+@pytest.mark.asyncio
+async def test_upstream_attempt_timeout_is_clamped_to_the_remaining_budget(
+    tmp_path, monkeypatch
+):
+    """A request may not be given more time than the call budget still has.
+
+    The per-request timeout used to be the configured ``http_timeout_seconds``
+    regardless of the call budget, so a single attempt could consume the whole
+    upstream deadline and the retry that followed ran past it.
+    """
+    transport = _RecordingTransport()
+    original_client = httpx.AsyncClient
+
+    def client_factory(*args, **kwargs):
+        kwargs.pop("transport", None)
+        return original_client(*args, transport=transport, **kwargs)
+
+    monkeypatch.setattr(server_mod.httpx, "AsyncClient", client_factory)
+    monkeypatch.setattr(server_mod, "_PROVIDER_BUDGETS", {})
+    monkeypatch.setattr(server_mod, "_FLIGHTS", {})
+    settings = settings_for(tmp_path, http_timeout_seconds=12.0)
+    searcher = server_mod.OsmSearcher(settings, user_valves=None)
+
+    budget = 0.5
+    token = server_mod._CALL_DEADLINE.set(time.monotonic() + budget)
+    try:
+        await searcher._http_get_json(
+            "https://overpass-api.de/api/interpreter",
+            params={"data": "out;"},
+            headers={"User-Agent": "percival-osm-test/1.0", "From": "test@example.com"},
+        )
+    finally:
+        server_mod._CALL_DEADLINE.reset(token)
+
+    assert transport.timeouts
+    for applied in transport.timeouts:
+        assert applied["read"] <= budget
+        assert applied["connect"] <= budget

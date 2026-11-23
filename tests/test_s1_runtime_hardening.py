@@ -143,7 +143,7 @@ async def test_http_get_json_uses_follow_redirect_setting_and_size_limit(monkeyp
         async def get(self, url, params=None, headers=None):
             return DummyResponse()
 
-        def stream(self, method, url, params=None, headers=None):
+        def stream(self, method, url, params=None, headers=None, timeout=None):
             return _stream_via_fake_get(self, url, params, headers)
 
         async def aclose(self):
@@ -202,7 +202,7 @@ async def test_http_get_json_validates_redirect_chain(monkeypatch) -> None:
             observed_urls.append(url)
             return DummyResponse()
 
-        def stream(self, method, url, params=None, headers=None):
+        def stream(self, method, url, params=None, headers=None, timeout=None):
             return _stream_via_fake_get(self, url, params, headers)
 
         async def aclose(self):
@@ -247,7 +247,7 @@ async def test_http_get_json_does_not_follow_redirect_when_disabled(monkeypatch)
             observed_urls.append(url)
             return DummyResponse()
 
-        def stream(self, method, url, params=None, headers=None):
+        def stream(self, method, url, params=None, headers=None, timeout=None):
             return _stream_via_fake_get(self, url, params, headers)
 
     async def fake_get_http_client(self):
@@ -301,7 +301,7 @@ async def test_http_get_json_allows_validated_allowlisted_redirect(monkeypatch) 
             observed_urls.append(url)
             return Redirect() if len(observed_urls) == 1 else Success()
 
-        def stream(self, method, url, params=None, headers=None):
+        def stream(self, method, url, params=None, headers=None, timeout=None):
             return _stream_via_fake_get(self, url, params, headers)
 
     async def fake_get_http_client(self):

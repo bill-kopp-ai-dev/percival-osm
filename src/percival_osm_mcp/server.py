@@ -382,6 +382,187 @@ _CALL_CLEANUP_BUDGET = contextvars.ContextVar(
     "osm_call_cleanup_budget", default=CANCELLATION_CLEANUP_TIMEOUT_SECONDS
 )
 _CALL_DEADLINE = contextvars.ContextVar("osm_call_deadline", default=None)
+_CALL_DIAGNOSTICS = contextvars.ContextVar("osm_call_diagnostics", default=None)
+
+# Stage vocabulary for per-call diagnosis. These are fixed, low-cardinality
+# identifiers: they are surfaced in operational telemetry and must never carry
+# user input, coordinates, URLs, queries, credentials, or upstream payloads.
+STAGE_GEOCODE = "geocode"
+STAGE_OVERPASS = "overpass"
+STAGE_ENRICH = "enrich"
+STAGE_ROUTE = "route"
+STAGE_RANK = "rank"
+STAGE_RENDER = "render"
+STAGE_CLEANUP = "cleanup"
+
+CALL_STAGES = frozenset(
+    {
+        STAGE_GEOCODE,
+        STAGE_OVERPASS,
+        STAGE_ENRICH,
+        STAGE_ROUTE,
+        STAGE_RANK,
+        STAGE_RENDER,
+        STAGE_CLEANUP,
+    }
+)
+
+# Reason vocabulary for why an upstream step failed or consumed the deadline.
+REASON_HTTP_ERROR = "http_error"
+REASON_TIMEOUT = "timeout"
+REASON_TRANSPORT_ERROR = "transport_error"
+REASON_INVALID_RESPONSE = "invalid_response"
+REASON_PARTIAL_RESPONSE = "partial_response"
+REASON_COOLDOWN = "cooldown"
+REASON_DEADLINE_EXCEEDED = "deadline_exceeded"
+REASON_VALIDATION_ERROR = "validation_error"
+REASON_CANCELLED = "cancelled"
+REASON_NONE = "none"
+
+CALL_FAILURE_REASONS = frozenset(
+    {
+        REASON_HTTP_ERROR,
+        REASON_TIMEOUT,
+        REASON_TRANSPORT_ERROR,
+        REASON_INVALID_RESPONSE,
+        REASON_PARTIAL_RESPONSE,
+        REASON_COOLDOWN,
+        REASON_DEADLINE_EXCEEDED,
+        REASON_VALIDATION_ERROR,
+        REASON_CANCELLED,
+        REASON_NONE,
+    }
+)
+
+
+class CallDiagnostics:
+    """Per-call, stage-level diagnosis driven by a monotonic clock.
+
+    Records the stage that was active, how long each stage took, how much of
+    that time was spent waiting locally (rate limit, cooldown, single-flight
+    hand-off, retry backoff) rather than on the wire, and a bounded reason
+    for a failure. Nothing user-supplied or upstream-derived is captured here:
+    no URLs, headers, queries, coordinates, exception text, or response
+    bodies.
+    """
+
+    __slots__ = (
+        "started_at",
+        "stages",
+        "waits",
+        "active_stage",
+        "last_stage",
+        "reason",
+        "http_status",
+        "backend",
+        "_active_since",
+    )
+
+    def __init__(self) -> None:
+        self.started_at = time.monotonic()
+        self.stages: dict[str, float] = {}
+        self.waits: dict[str, float] = {}
+        self.active_stage: Optional[str] = None
+        self.last_stage: Optional[str] = None
+        self.reason: Optional[str] = None
+        self.http_status: Optional[int] = None
+        self.backend: Optional[str] = None
+        self._active_since: float = 0.0
+
+    def enter(self, stage: str) -> None:
+        """Mark ``stage`` as the stage currently consuming the budget."""
+        if stage not in CALL_STAGES:
+            return
+        self.close_stage()
+        self.active_stage = stage
+        self.last_stage = stage
+        self._active_since = time.monotonic()
+
+    def close_stage(self) -> None:
+        """Accumulate the elapsed time of the active stage and clear it."""
+        if self.active_stage is None:
+            return
+        elapsed = time.monotonic() - self._active_since
+        self.stages[self.active_stage] = round(
+            self.stages.get(self.active_stage, 0.0) + elapsed, 4
+        )
+        self.active_stage = None
+
+    def record_wait(self, seconds: float, stage: Optional[str] = None) -> None:
+        """Attribute local wait time (limit, cooldown, retry) to a stage."""
+        key = stage or self.active_stage or STAGE_OVERPASS
+        if key not in CALL_STAGES:
+            return
+        self.waits[key] = round(self.waits.get(key, 0.0) + max(0.0, seconds), 4)
+
+    def fail(self, reason: str, *, status: Optional[int] = None) -> None:
+        """Record why the call failed using the fixed reason vocabulary."""
+        self.reason = reason if reason in CALL_FAILURE_REASONS else REASON_NONE
+        if status is not None:
+            try:
+                self.http_status = int(status)
+            except (TypeError, ValueError):
+                self.http_status = None
+
+    def snapshot(self) -> dict[str, Any]:
+        """Build a sanitized, bounded view of the diagnosis."""
+        stages = dict(self.stages)
+        if self.active_stage is not None:
+            stages[self.active_stage] = round(
+                stages.get(self.active_stage, 0.0)
+                + (time.monotonic() - self._active_since),
+                4,
+            )
+        payload: dict[str, Any] = {
+            "stages": stages,
+            "waits": dict(self.waits),
+            "elapsed_seconds": round(time.monotonic() - self.started_at, 4),
+        }
+        if self.active_stage is not None:
+            payload["active_stage"] = self.active_stage
+        if self.reason is not None:
+            payload["reason"] = self.reason
+        if self.http_status is not None:
+            payload["http_status"] = self.http_status
+        if self.backend is not None:
+            payload["backend"] = self.backend
+        return payload
+
+
+def _call_diagnostics() -> Optional[CallDiagnostics]:
+    """Return the diagnosis bound to the current call, if any."""
+    return _CALL_DIAGNOSTICS.get()
+
+
+def _emit_call_diagnosis(diagnostics: CallDiagnostics) -> None:
+    """Write a sanitized per-call diagnosis to the operational log (stderr).
+
+    Only stage names, durations, a bounded reason and the HTTP status are
+    emitted: no URL, header, credential, queried place, Overpass query,
+    exception text, or upstream payload reaches the log.
+    """
+    snapshot = diagnostics.snapshot()
+    stages = snapshot.get("stages", {})
+    summary = ",".join(f"{name}={stages[name]:.3f}" for name in sorted(stages))
+    logger.info(
+        "Nearby search diagnosis: elapsed=%.3f stages=[%s] reason=%s status=%s",
+        snapshot.get("elapsed_seconds", 0.0),
+        summary,
+        snapshot.get("reason", REASON_NONE),
+        snapshot.get("http_status"),
+    )
+
+
+def _split_call_budget(timeout_seconds: float) -> tuple[float, float]:
+    """Split a configured deadline into (search budget, cleanup reserve).
+
+    The cleanup reserve is carved *out of* the configured deadline so that
+    cancellation and resource teardown fit inside the budget the operator
+    configured instead of being added on top of it.
+    """
+    total = max(0.001, float(timeout_seconds))
+    cleanup = min(CANCELLATION_CLEANUP_TIMEOUT_SECONDS, total * 0.1)
+    return max(0.001, total - cleanup), cleanup
 
 # Initialize FastMCP server
 mcp = FastMCP(
@@ -838,15 +1019,43 @@ def record_tool_outcome(tool_name: str, outcome: str) -> None:
         counts[safe_outcome] = counts.get(safe_outcome, 0) + 1
 
 
-def record_upstream_failure(kind: str, message: str) -> None:
-    """Track the most recent upstream failure (rate-limited, blocked, network)."""
+def record_upstream_failure(
+    kind: str,
+    message: str,
+    *,
+    stage: Optional[str] = None,
+    reason: Optional[str] = None,
+    diagnostics: Optional[CallDiagnostics] = None,
+) -> None:
+    """Track the most recent upstream failure (rate-limited, blocked, network).
+
+    The optional ``stage``/``reason`` pair and the sanitized per-call
+    diagnosis make it possible to tell *which* step failed or consumed the
+    deadline without exposing upstream content.
+    """
     safe_kind = sanitize_external_text(kind, max_length=40) or "unknown"
     safe_msg = sanitize_external_text(message, max_length=200)
+    safe_stage = stage if stage in CALL_STAGES else None
+    safe_reason = reason if reason in CALL_FAILURE_REASONS else None
     with _OPERATIONAL_LOCK:
         _LAST_UPSTREAM_FAILURE.clear()
-        _LAST_UPSTREAM_FAILURE.update(
-            {"kind": safe_kind, "message": safe_msg, "ts": time.time()}
-        )
+        entry: dict[str, Any] = {"kind": safe_kind, "message": safe_msg, "ts": time.time()}
+        if safe_stage is not None:
+            entry["stage"] = safe_stage
+        if safe_reason is not None:
+            entry["reason"] = safe_reason
+        if diagnostics is not None:
+            snapshot = diagnostics.snapshot()
+            if "active_stage" in snapshot and safe_stage is None:
+                entry["stage"] = snapshot["active_stage"]
+            if "reason" in snapshot and safe_reason is None:
+                entry["reason"] = snapshot["reason"]
+            if "http_status" in snapshot:
+                entry["http_status"] = snapshot["http_status"]
+            entry["stages"] = snapshot["stages"]
+            entry["waits"] = snapshot["waits"]
+            entry["elapsed_seconds"] = snapshot["elapsed_seconds"]
+        _LAST_UPSTREAM_FAILURE.update(entry)
 
 
 def get_operational_snapshot() -> dict[str, Any]:
@@ -2188,6 +2397,13 @@ class OsmSearcher:
                     )
         return self._http_client
 
+    def _remaining_budget_seconds(self) -> Optional[float]:
+        """Seconds left in the current call budget, or None when unbounded."""
+        deadline = _CALL_DEADLINE.get()
+        if deadline is None:
+            return None
+        return deadline - time.monotonic()
+
     async def aclose(self, *, cancel_pending: bool = False) -> None:
         cleanup_budget = min(
             CANCELLATION_CLEANUP_TIMEOUT_SECONDS,
@@ -2265,7 +2481,7 @@ class OsmSearcher:
                     self._http_client = None
 
     @asynccontextmanager
-    async def _provider_stream(self, client, url, params, headers):
+    async def _provider_stream(self, client, url, params, headers, *, timeout=None):
         host = (urlsplit(url).hostname or "").lower()
         budget = _provider_budget(url)
         geocoder_host = (urlsplit(self.valves.nominatim_url).hostname or "").lower()
@@ -2273,22 +2489,51 @@ class OsmSearcher:
                     if host in {"nominatim.openstreetmap.org", geocoder_host} else 0.0)
         if host == "nominatim.openstreetmap.org":
             interval = max(1.0, interval)
-        async with budget.admission(interval):
-            if isinstance(params.get("data"), str) and "__OSM_QL_TIMEOUT__" in params["data"]:
-                deadline = _CALL_DEADLINE.get()
-                remaining = (deadline - time.monotonic()) if deadline is not None else float(self.valves.upstream_tool_deadline_seconds)
-                ql_timeout = _overpass_ql_timeout(remaining)
-                params = {**params, "data": params["data"].replace("__OSM_QL_TIMEOUT__", str(ql_timeout))}
-            async with client.stream("GET", url, params=params, headers=headers) as response:
-                delay = _retry_after_seconds(response.headers.get("retry-after"))
-                if host == "overpass-api.de" and response.status_code in {406, 429}:
-                    delay = max(30.0, delay)
-                if response.status_code == 429 and delay == 0:
-                    delay = 1.0
-                if delay and (response.status_code in {406, 429} or response.status_code >= 500):
-                    budget.cooldown(delay)
-                    raise ProviderCooldown(delay)
-                yield response
+        diagnostics = _call_diagnostics()
+        if diagnostics is not None:
+            # Label the provider by role, never by host: the allow-listed host
+            # name is configuration, but it must not leak into telemetry.
+            if host in {"nominatim.openstreetmap.org", geocoder_host}:
+                diagnostics.backend = "nominatim"
+            elif host == "overpass-api.de":
+                diagnostics.backend = "overpass"
+            else:
+                diagnostics.backend = "heigit"
+        wait_started = time.monotonic()
+        try:
+            async with budget.admission(interval):
+                if diagnostics is not None:
+                    diagnostics.record_wait(time.monotonic() - wait_started)
+                if isinstance(params.get("data"), str) and "__OSM_QL_TIMEOUT__" in params["data"]:
+                    deadline = _CALL_DEADLINE.get()
+                    remaining = (deadline - time.monotonic()) if deadline is not None else float(self.valves.upstream_tool_deadline_seconds)
+                    try:
+                        ql_timeout = _overpass_ql_timeout(remaining)
+                    except UpstreamRequestError:
+                        # The remaining budget cannot host a whole-second
+                        # Overpass query: the deadline is spent.
+                        if diagnostics is not None:
+                            diagnostics.fail(REASON_DEADLINE_EXCEEDED)
+                        raise
+                    params = {**params, "data": params["data"].replace("__OSM_QL_TIMEOUT__", str(ql_timeout))}
+                stream_kwargs: dict[str, Any] = {}
+                if timeout is not None:
+                    stream_kwargs["timeout"] = timeout
+                async with client.stream("GET", url, params=params, headers=headers, **stream_kwargs) as response:
+                    delay = _retry_after_seconds(response.headers.get("retry-after"))
+                    if host == "overpass-api.de" and response.status_code in {406, 429}:
+                        delay = max(30.0, delay)
+                    if response.status_code == 429 and delay == 0:
+                        delay = 1.0
+                    if delay and (response.status_code in {406, 429} or response.status_code >= 500):
+                        budget.cooldown(delay)
+                        raise ProviderCooldown(delay)
+                    yield response
+        except ProviderCooldown:
+            if diagnostics is not None:
+                diagnostics.record_wait(time.monotonic() - wait_started)
+                diagnostics.fail(REASON_COOLDOWN)
+            raise
 
     async def _http_get_json(self, url: str, params: dict[str, Any], headers: dict[str, str]) -> Any:
         validate_upstream_url_policy(url, settings=self.valves, label="upstream_request_url")
@@ -2367,7 +2612,21 @@ class OsmSearcher:
         backoff = max(0.0, self.valves.http_retry_backoff_seconds)
         max_response_bytes = max(1024, int(self.valves.http_max_response_bytes))
         last_exception: Optional[Exception] = None
+        diagnostics = _call_diagnostics()
         for attempt in range(max_attempts):
+            # Clamp the per-attempt timeout and the retry backoff to whatever
+            # is left of the call budget. Without this, a single attempt can
+            # consume the whole upstream deadline and the retry then runs
+            # past it, wasting the provider's capacity and hiding the real
+            # stage behind a generic deadline error.
+            remaining = self._remaining_budget_seconds()
+            if remaining is not None and remaining <= 0.0:
+                raise UpstreamRequestError(
+                    "Upstream deadline exhausted before the request could start."
+                )
+            attempt_timeout = self.valves.http_timeout_seconds
+            if remaining is not None:
+                attempt_timeout = min(attempt_timeout, max(0.001, remaining))
             try:
                 async with self._http_semaphore:
                     client = await self._get_http_client()
@@ -2375,7 +2634,8 @@ class OsmSearcher:
                     current_params = params
                     for _ in range(6):
                         async with self._provider_stream(
-                            client, current_url, current_params, headers
+                            client, current_url, current_params, headers,
+                            timeout=attempt_timeout,
                         ) as response:
                             if response.status_code in {301, 302, 303, 307, 308} and self.valves.http_follow_redirects:
                                 location = response.headers.get("location")
@@ -2429,13 +2689,37 @@ class OsmSearcher:
                     url=url,
                     error_type=type(exc).__name__,
                 )
-                record_upstream_failure(type(exc).__name__, _upstream_error_summary(exc))
+                if diagnostics is not None:
+                    if isinstance(exc, httpx.HTTPStatusError):
+                        diagnostics.fail(
+                            REASON_HTTP_ERROR, status=exc.response.status_code
+                        )
+                    elif isinstance(exc, httpx.TimeoutException):
+                        diagnostics.fail(REASON_TIMEOUT)
+                    else:
+                        diagnostics.fail(REASON_TRANSPORT_ERROR)
+                record_upstream_failure(
+                    type(exc).__name__,
+                    _upstream_error_summary(exc),
+                    reason=diagnostics.reason if diagnostics is not None else None,
+                )
                 is_retryable = isinstance(exc, httpx.RequestError) or (
                     isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code >= 500
                 )
                 if attempt == max_attempts - 1 or not is_retryable:
                     raise
-                await asyncio.sleep(backoff * (attempt + 1))
+                sleep_for = backoff * (attempt + 1)
+                remaining = self._remaining_budget_seconds()
+                if remaining is not None:
+                    if remaining <= sleep_for:
+                        # No room left for another attempt: surface the
+                        # failure now instead of starting work that the
+                        # deadline would cancel mid-flight.
+                        raise
+                    sleep_for = min(sleep_for, remaining)
+                if diagnostics is not None:
+                    diagnostics.record_wait(sleep_for)
+                await asyncio.sleep(sleep_for)
 
         # The loop above always either returns (on success) or re-raises
         # (on the last attempt or non-retryable failure), so this line is
@@ -2803,7 +3087,11 @@ class OsmSearcher:
         except Exception as exc:
             await self.event_error(exc)
             logger.warning("Nominatim lookup request failed: %s", _upstream_error_summary(exc))
-            record_upstream_failure("NominatimLookup", _upstream_error_summary(exc))
+            record_upstream_failure(
+                "NominatimLookup",
+                _upstream_error_summary(exc),
+                diagnostics=_call_diagnostics(),
+            )
             raise UpstreamRequestError("Nominatim lookup request failed.") from exc
 
         if data == []:
@@ -2818,6 +3106,16 @@ class OsmSearcher:
             or "osm_id" not in item
             for item in data
         ):
+            # An unusable response is a provider failure, not an empty
+            # result: record it so the operator can tell the two apart.
+            diagnostics = _call_diagnostics()
+            if diagnostics is not None:
+                diagnostics.fail(REASON_INVALID_RESPONSE)
+            record_upstream_failure(
+                "NominatimLookup",
+                "Nominatim lookup returned malformed place data.",
+                diagnostics=diagnostics,
+            )
             raise UpstreamRequestError("Nominatim lookup returned malformed place data.")
 
         addresses_by_id = {
@@ -2879,7 +3177,11 @@ class OsmSearcher:
         except Exception as exc:
             await self.event_error(exc)
             logger.warning("Nominatim search request failed: %s", _upstream_error_summary(exc))
-            record_upstream_failure("NominatimSearch", _upstream_error_summary(exc))
+            record_upstream_failure(
+                "NominatimSearch",
+                _upstream_error_summary(exc),
+                diagnostics=_call_diagnostics(),
+            )
             raise UpstreamRequestError("Nominatim search request failed.") from exc
 
         await self.event_resolving(done=True)
@@ -3030,14 +3332,23 @@ class OsmSearcher:
         try:
             payload = await self._http_get_json(url, params=data, headers=headers)
         except Exception as exc:
-            record_upstream_failure("Overpass", _upstream_error_summary(exc))
+            record_upstream_failure(
+                "Overpass",
+                _upstream_error_summary(exc),
+                diagnostics=_call_diagnostics(),
+            )
             raise UpstreamRequestError("Overpass request failed.") from exc
 
         # nodes have exact GPS coordinates. we also include useful way entries,
         # post-processed to remove extra data and add centered GPS coordinates.
+        diagnostics = _call_diagnostics()
         if not isinstance(payload, dict) or not isinstance(payload.get("elements"), list):
+            if diagnostics is not None:
+                diagnostics.fail(REASON_INVALID_RESPONSE)
             raise UpstreamRequestError("Overpass returned an invalid response.")
         if payload.get("remark"):
+            if diagnostics is not None:
+                diagnostics.fail(REASON_PARTIAL_RESPONSE)
             raise UpstreamRequestError("Overpass returned a partial/error response.")
         if any(not isinstance(item, dict) for item in payload["elements"]):
             raise UpstreamRequestError("Overpass returned malformed elements.")
@@ -3071,8 +3382,15 @@ class OsmSearcher:
         if len(things_missing_names) > 0:
             enrichment_candidates = things_missing_names[:20]
             logger.debug("Updating %d things with info", len(enrichment_candidates))
+            diagnostics = _call_diagnostics()
             for way_chunk in chunk_list(enrichment_candidates, 20):
-                updated = await self.nominatim_lookup_by_id(way_chunk)
+                if diagnostics is not None:
+                    diagnostics.enter(STAGE_ENRICH)
+                try:
+                    updated = await self.nominatim_lookup_by_id(way_chunk)
+                finally:
+                    if diagnostics is not None:
+                        diagnostics.close_stage()
                 ways = ways + updated
 
         osm3s = payload.get("osm3s")
@@ -3088,7 +3406,14 @@ class OsmSearcher:
     async def get_things_nearby(
         self, nominatim_result, place, tags, bbox, limit, radius
     ):
-        nodes, ways = await self.overpass_search(place, tags, bbox, limit, radius)
+        diagnostics = _call_diagnostics()
+        if diagnostics is not None:
+            diagnostics.enter(STAGE_OVERPASS)
+        try:
+            nodes, ways = await self.overpass_search(place, tags, bbox, limit, radius)
+        finally:
+            if diagnostics is not None:
+                diagnostics.close_stage()
 
         # A successful but empty Overpass response means that no nearby
         # features matched. The resolved Nominatim place is not itself a POI
@@ -3098,19 +3423,32 @@ class OsmSearcher:
         # in order to not spam ORS, we first sort by haversine
         # distance and drop number of results to the limit. then, if
         # enabled, we calculate ORS distances. then we sort again.
-        origin = get_bounding_box_center(bbox)
-        self.calculate_haversine(origin, things_nearby)
+        if diagnostics is not None:
+            diagnostics.enter(STAGE_RANK)
+        try:
+            origin = get_bounding_box_center(bbox)
+            self.calculate_haversine(origin, things_nearby)
 
-        # sort by importance + distance, drop to the liimt, then sort
-        # by closeness.
-        things_nearby = sort_by_rank(things_nearby)
-        things_nearby = things_nearby[:limit]  # drop down to requested limit
-        things_nearby = sort_by_closeness(origin, things_nearby, "distance")
+            # sort by importance + distance, drop to the liimt, then sort
+            # by closeness.
+            things_nearby = sort_by_rank(things_nearby)
+            things_nearby = things_nearby[:limit]  # drop down to requested limit
+            things_nearby = sort_by_closeness(origin, things_nearby, "distance")
 
-        if await self.attempt_ors(origin, things_nearby):
-            things_nearby = sort_by_closeness(
-                origin, things_nearby, "nav_distance", "distance"
-            )
+            if diagnostics is not None:
+                diagnostics.enter(STAGE_ROUTE)
+            try:
+                routed = await self.attempt_ors(origin, things_nearby)
+            finally:
+                if diagnostics is not None:
+                    diagnostics.close_stage()
+            if routed:
+                things_nearby = sort_by_closeness(
+                    origin, things_nearby, "nav_distance", "distance"
+                )
+        finally:
+            if diagnostics is not None:
+                diagnostics.close_stage()
         return things_nearby
 
     async def search_nearby(
@@ -3143,10 +3481,16 @@ class OsmSearcher:
                 "things": [],
             }
 
+        diagnostics = _call_diagnostics()
+        if diagnostics is not None:
+            diagnostics.enter(STAGE_GEOCODE)
         try:
             nominatim_result = await self.nominatim_search(place, limit=1)
         except ValueError as exc:
             await self.event_error(exc)
+            if diagnostics is not None:
+                diagnostics.close_stage()
+                diagnostics.fail(REASON_VALIDATION_ERROR)
             return {
                 "place_display_name": place,
                 "results": build_tool_response(
@@ -3157,6 +3501,8 @@ class OsmSearcher:
                 "things": [],
             }
         except UpstreamRequestError as exc:
+            if diagnostics is not None:
+                diagnostics.close_stage()
             return {
                 "place_display_name": place,
                 "results": build_tool_response(
@@ -3167,6 +3513,9 @@ class OsmSearcher:
                 ),
                 "things": [],
             }
+        finally:
+            if diagnostics is not None:
+                diagnostics.close_stage()
 
         if not nominatim_result or len(nominatim_result) == 0:
             await self.event_search_complete(category, place, 0)
@@ -3212,6 +3561,8 @@ class OsmSearcher:
                 if not (-90 <= south <= north <= 90 and -180 <= west <= east <= 180):
                     raise ValueError
             except (TypeError, ValueError):
+                if diagnostics is not None:
+                    diagnostics.fail(REASON_INVALID_RESPONSE)
                 return {
                     "place_display_name": place_display_name,
                     "results": build_tool_response(
@@ -3250,12 +3601,18 @@ class OsmSearcher:
 
             # Only print the full result instructions if we
             # actually have something.
-            search_results = convert_and_validate_results(
-                place,
-                things_nearby,
-                response_mode=resolved_mode,
-            )
-            result_items = build_result_items(things_nearby, use_distance=True)
+            if diagnostics is not None:
+                diagnostics.enter(STAGE_RENDER)
+            try:
+                search_results = convert_and_validate_results(
+                    place,
+                    things_nearby,
+                    response_mode=resolved_mode,
+                )
+                result_items = build_result_items(things_nearby, use_distance=True)
+            finally:
+                if diagnostics is not None:
+                    diagnostics.close_stage()
             if not search_results:
                 search_results = "# Search Results\n\nNo normalized results available."
 
@@ -3366,21 +3723,19 @@ async def do_osm_search(
 
     logger.debug("Searching for category %s", category)
     searcher = OsmSearcher(valves, user_valves, event_emitter)
-    deadline_expired = False
-    try:
-        search, deadline_expired = await _search_nearby_with_deadline(
-            searcher,
-            place,
-            tags,
-            timeout_seconds=float(valves.upstream_tool_deadline_seconds),
-            limit=limit,
-            radius=radius,
-            category=category,
-            response_mode=response_mode,
-        )
-        return search["results"]
-    finally:
-        await searcher.aclose(cancel_pending=deadline_expired)
+    # `_search_nearby_with_deadline` owns the deadline and the teardown of
+    # the resources it created.
+    search, _deadline_expired = await _search_nearby_with_deadline(
+        searcher,
+        place,
+        tags,
+        timeout_seconds=float(valves.upstream_tool_deadline_seconds),
+        limit=limit,
+        radius=radius,
+        category=category,
+        response_mode=response_mode,
+    )
+    return search["results"]
 
 
 async def do_osm_search_full(
@@ -3428,21 +3783,19 @@ async def do_osm_search_full(
 
     logger.debug("Searching for category %s", category)
     searcher = OsmSearcher(valves, user_valves, event_emitter)
-    deadline_expired = False
-    try:
-        search, deadline_expired = await _search_nearby_with_deadline(
-            searcher,
-            place,
-            tags,
-            timeout_seconds=float(valves.upstream_tool_deadline_seconds),
-            limit=limit,
-            radius=radius,
-            category=category,
-            response_mode=response_mode,
-        )
-        return search
-    finally:
-        await searcher.aclose(cancel_pending=deadline_expired)
+    # `_search_nearby_with_deadline` owns the deadline and the teardown of
+    # the resources it created.
+    search, _deadline_expired = await _search_nearby_with_deadline(
+        searcher,
+        place,
+        tags,
+        timeout_seconds=float(valves.upstream_tool_deadline_seconds),
+        limit=limit,
+        radius=radius,
+        category=category,
+        response_mode=response_mode,
+    )
+    return search
 
 
 async def _search_nearby_with_deadline(
@@ -3456,50 +3809,95 @@ async def _search_nearby_with_deadline(
     category: str,
     response_mode: Optional[str],
 ) -> tuple[dict[str, Any], bool]:
-    current_deadline = _CALL_DEADLINE.get()
-    effective_deadline = min(current_deadline, time.monotonic() + timeout_seconds) if current_deadline else time.monotonic() + timeout_seconds
+    """Run the nearby search under a single absolute effective deadline.
+
+    The configured deadline is split into a search budget and a cleanup
+    reserve. The reserve is carved out of the configured value, so
+    cancellation and resource teardown fit *inside* the operator's budget
+    instead of being added on top of it. The published deadline and the
+    enforcing timer are the same value, so the transport can clamp its own
+    timeouts and retries against the budget that is actually left.
+    """
+    inherited_deadline = _CALL_DEADLINE.get()
+    search_budget, cleanup_reserve = _split_call_budget(timeout_seconds)
+    now = time.monotonic()
+    local_deadline = now + search_budget
+    effective_deadline = (
+        min(inherited_deadline, local_deadline)
+        if inherited_deadline is not None
+        else local_deadline
+    )
     deadline_token = _CALL_DEADLINE.set(effective_deadline)
+    cleanup_token = _CALL_CLEANUP_BUDGET.set(cleanup_reserve)
+    diagnostics = CallDiagnostics()
+    diagnostics_token = _CALL_DIAGNOSTICS.set(diagnostics)
+    deadline_expired = False
     try:
-        deadline = asyncio.timeout(timeout_seconds)
-        async with deadline:
-            result = await searcher.search_nearby(
-                place,
-                tags,
-                limit=limit,
-                radius=radius,
-                category=category,
-                response_mode=response_mode,
+        try:
+            remaining = max(0.001, effective_deadline - time.monotonic())
+            deadline = asyncio.timeout(remaining)
+            async with deadline:
+                result = await searcher.search_nearby(
+                    place,
+                    tags,
+                    limit=limit,
+                    radius=radius,
+                    category=category,
+                    response_mode=response_mode,
+                )
+            return result, False
+        except TimeoutError:
+            if not deadline.expired():
+                raise
+            # The stage that was active when the budget ran out is preserved
+            # so the operator can tell a slow geocoder apart from a slow
+            # Overpass query. The stage may already have been closed by the
+            # cancellation unwinding the call stack, so fall back to the last
+            # stage that was entered.
+            active_stage = diagnostics.active_stage or diagnostics.last_stage
+            diagnostics.fail(REASON_DEADLINE_EXCEEDED)
+            logger.warning(
+                "Nearby search exceeded its %.1f second execution deadline",
+                timeout_seconds,
             )
-        return result, False
-    except TimeoutError:
-        if not deadline.expired():
-            raise
-        logger.warning(
-            "Nearby search exceeded its %.1f second execution deadline", timeout_seconds
-        )
-        record_upstream_failure(
-            "NearbySearch", f"end-to-end deadline exceeded after {timeout_seconds:g}s"
-        )
-        query = {
-            "place": sanitize_external_text(place, max_length=220),
-            "category": sanitize_external_text(category, max_length=80),
-            "limit": int(limit),
-            "radius_m": int(radius),
-            "response_mode": normalize_response_mode(
-                response_mode, RESPONSE_MODE_COMPACT
-            ),
-        }
-        return {
-            "place_display_name": place,
-            "results": build_tool_response(
-                status="upstream_error",
-                message="Nearby search exceeded its execution deadline; retry later.",
-                query=query,
-            ),
-            "things": [],
-        }, True
+            record_upstream_failure(
+                "NearbySearch",
+                f"end-to-end deadline exceeded after {timeout_seconds:g}s",
+                stage=active_stage,
+                reason=REASON_DEADLINE_EXCEEDED,
+                diagnostics=diagnostics,
+            )
+            query = {
+                "place": sanitize_external_text(place, max_length=220),
+                "category": sanitize_external_text(category, max_length=80),
+                "limit": int(limit),
+                "radius_m": int(radius),
+                "response_mode": normalize_response_mode(
+                    response_mode, RESPONSE_MODE_COMPACT
+                ),
+            }
+            deadline_expired = True
+            return {
+                "place_display_name": place,
+                "results": build_tool_response(
+                    status="upstream_error",
+                    message="Nearby search exceeded its execution deadline; retry later.",
+                    query=query,
+                ),
+                "things": [],
+            }, True
     finally:
-        _CALL_DEADLINE.reset(deadline_token)
+        try:
+            # Teardown happens inside the reserved slice of the budget, so the
+            # whole call stays within the deadline the operator configured.
+            diagnostics.enter(STAGE_CLEANUP)
+            await searcher.aclose(cancel_pending=deadline_expired)
+        finally:
+            diagnostics.close_stage()
+            _emit_call_diagnosis(diagnostics)
+            _CALL_DIAGNOSTICS.reset(diagnostics_token)
+            _CALL_CLEANUP_BUDGET.reset(cleanup_token)
+            _CALL_DEADLINE.reset(deadline_token)
 
 
 def unsupported_category_message(category: str) -> str:
@@ -3907,6 +4305,16 @@ class OsmNavigator:
 def _track(tool_name: str):
     """Decorator: increment per-tool call/error counters for operational health."""
 
+    # Tools that reach an upstream provider and need an end-to-end deadline.
+    #
+    # The nearby-search family (``osm_find_nearby``,
+    # ``osm_find_nearby_detailed`` and the category aliases) is deliberately
+    # absent: its handler owns a single absolute deadline of its own, so the
+    # tracker must not arm a second, competing timer. Two timers race, and
+    # the loser decides whether the failure is reported as a tool-level
+    # deadline or as a provider-stage failure. The nearby handler publishes
+    # the same budget through the same context variables, so the transport
+    # still clamps itself against it.
     upstream_tool_names = {
         "osm_find_address",
         "osm_find_nearby_store",
