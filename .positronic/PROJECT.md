@@ -98,8 +98,9 @@ controle do operador.
   público do Overpass (`HTTP 502` → `upstream_error` com `stage=overpass`).
   O geocoding público estava saudável na mesma batelada. A causa raiz foi
   atribuída ao provedor; o aceite operacional (busca nearby bem-sucedida)
-  permanece pendente de disponibilidade externa. Ver
-  `docs/issues/2026-11-23-nearby-search-upstream-failures.md`. A política de
+  permanece pendente de disponibilidade externa. O registro detalhado da
+  issue é mantido no repositório privado do operador e não é publicado no
+  repositório público. A política de
   upstream não foi afrouxada para contornar a indisponibilidade.
 
 ## Verification

@@ -1,7 +1,7 @@
 """Stage diagnosis and deadline accounting for the nearby search flow.
 
-Regression coverage for the issue recorded in
-``docs/issues/2026-11-23-nearby-search-upstream-failures.md``:
+Regression coverage for the nearby-search issue diagnosed on 2026-11-23
+(the detailed record is kept in the operator's private working records):
 
 * the nearby path could not attribute an upstream failure or a deadline
   overrun to a stage, so the 2026-11-23 failure could not be classified;

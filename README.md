@@ -708,11 +708,14 @@ The suite covers:
 |---|---|
 | `docs/ADR-2026-11-17-async-upstream-transport.md` | Accepted decision on the async upstream transport and the end-to-end deadline |
 | `docs/integrations/percival-osm.md` | Managed-runtime integration profile (pt-BR) |
-| `docs/issues/` | Open and closed issues with diagnosis and acceptance evidence |
-| `docs/plans/` | Remediation plans tied to the issues |
-| `docs/reports/` | Provider/authentication research reports |
 | `servers/percival-osm/` | Docker MCP Catalog submission artifacts |
 | `src/percival_osm_mcp/docs/security/nanobot-policy.md` | The policy shipped inside the wheel and served as `osm://security/nanobot-policy` |
+
+Issue, plan and research-report records (`docs/issues/`, `docs/plans/`,
+`docs/reports/`) are operator working records: they are kept in the
+operator's private repository and are not published here. Public
+documentation in this repository covers the shipped contract, the accepted
+decisions and the integration profile.
 
 ### Known operational issue
 
@@ -722,8 +725,8 @@ the call was reported as `upstream_error` with `stage=overpass`,
 `reason=deadline_exceeded`, attributed by the new stage diagnostics. The
 public geocoding path was healthy in the same batch. The operational
 acceptance (a successful nearby search) is still pending provider
-availability — see
-[`docs/issues/2026-11-23-nearby-search-upstream-failures.md`](./docs/issues/2026-11-23-nearby-search-upstream-failures.md).
+availability. The detailed diagnosis is kept in the operator's private
+working records and is not published in this repository.
 No upstream policy was relaxed to work around it.
 
 ---

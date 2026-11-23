@@ -13,11 +13,29 @@ wheels/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.cache/
 
 # Local environment configuration (contains secrets like ORS_API_KEY)
 .env
 .env.*
 !.env.example
+*.env
+
+# Secret material (kept out of the public repository)
+secrets/
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Runtime logs
+logs/
+*.log
+
+# Local databases and state
+*.db
+*.sqlite
+*.sqlite3
 
 # IDE / editor
 .vscode/
@@ -25,15 +43,40 @@ wheels/
 .obsidian/
 *.swp
 .DS_Store
+Thumbs.db
+
+# Editor / shell leftovers
+*.bak
+*~
+.envrc
+.direnv/
+
+# Local launcher working directory (may carry resolved secret values)
+.nanobot-test/
 
 # Security tooling artifacts
 .bandit-report.*.json
 
 # Coverage
 .coverage
+.coverage.*
+coverage.xml
 htmlcov/
+
+# Internal working records — kept in the operator's private repository,
+# not published in the public one.
+docs/issues/
+docs/plans/
+docs/reports/
+
 # Local Percival integration working note (not for the public repo)
 docs/percival-integration.md
 
 # Positronic runtime state (local index of managed journal notes)
 .positronic/state.sqlite
+.positronic/*.log
+
+# Author-attribution map, kept outside the repository so the public tree
+# does not carry a list of the operator's identities. The local clone points
+# at it through ``git config --local mailmap.file``.
+.mailmap
