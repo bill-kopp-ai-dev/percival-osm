@@ -22,6 +22,7 @@ wheels/
 # IDE / editor
 .vscode/
 .idea/
+.obsidian/
 *.swp
 .DS_Store
 
@@ -33,3 +34,6 @@ wheels/
 htmlcov/
 # Local Percival integration working note (not for the public repo)
 docs/percival-integration.md
+
+# Positronic runtime state (local index of managed journal notes)
+.positronic/state.sqlite
