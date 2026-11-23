@@ -54,3 +54,31 @@ A busca próxima distingue ausência de POIs de falha do provedor, termina dentr
 - [x] Rodar os testes focados com `uv run pytest`: suíte completa passa (174 testes). `bandit` sem achados (0 low/medium/high). `pip-audit` reporta achados apenas em `filelock`, `msgpack`, `pip` e `pytest` — ferramentas de desenvolvimento, não dependências de runtime do pacote; nenhuma dependência foi alterada por este plano. `ruff` não está instalado no ambiente, portanto não foi executado.
 - [x] Chamada real pelo MCP com os parâmetros da issue, em ambiente de validação, respeitando cooldown e limites: duas execuções, com intervalo, e sem rajada. Registro: versão `0.5.0`, commit `a5aa7928cf97`, backend `overpass` (rotulado por função, sem expor host), cache `persistent` e não degradado, duração 15,903 s e 15,904 s (dentro do deadline de 16 s), status `upstream_error`, contagem de POIs 0, `stage=overpass`, `reason=deadline_exceeded`, `http_status=502`.
 - [x] Verificação real bloqueada por indisponibilidade externa: classificação registrada na [issue](../issues/2026-11-23-nearby-search-upstream-failures.md) — **falha externa observada na etapa do provedor**. O aceite operacional (`ok` com 1–3 POIs) permanece pendente até obter evidência de sucesso; a política de upstream não foi alterada e nenhuma rajada foi feita para obter um resultado verde.
+
+## Revalidação da imagem refatorada (2026-11-23)
+
+Após a refatoração e o pin da imagem, foi feita uma nova chamada real pela interface MCP ativa, usando os parâmetros da reprodução da issue (`Praça da Sé, São Paulo, Brazil`, `pharmacies`, `limit=3`, `radius=1500`). A identidade da imagem em execução havia sido verificada no container Positronic como revisão `ba61872b6b27c6a1da248e8e39b61bd265037c64`, imagem `sha256:b9bf03a08a5e87d4e80c5c9cb6c207d2729d6aac3fe9cf5cb6ecde12ee947b92`, versão OCI `0.5.0`. A chamada observada foi atendida pelo servidor `percival-osm` versão `0.5.0`, Python `3.12.15`, iniciado em `2026-11-23T12:39:29.585563+00:00`.
+
+- Resultado MCP: `status=upstream_error`; nenhum POI retornado.
+- `osm_get_health`: uma chamada `osm_find_nearby`, um outcome `upstream_error`, nenhum `tool_error`; `last_upstream_failure.kind=Overpass`, `stage=overpass`, `reason=deadline_exceeded`, `http_status=502`.
+- Duração registrada: `geocode=0,1146 s`, `overpass=14,8324 s`, `elapsed=14,9472 s`; espera local `overpass=1,8 s`. A chamada terminou dentro do deadline configurado de 16 s. Cache persistente e não degradado.
+- `osm_get_version` e `osm_get_health` retornaram `status=ok`.
+- Interpretação: a execução real confirma que a imagem refatorada expõe etapa, motivo e status HTTP sanitizados, mantém o outcome MCP controlado e encerra dentro do orçamento. A falha funcional da consulta persiste porque o upstream Overpass respondeu HTTP 502; esta tentativa não demonstra sucesso com 1–3 POIs e não permite inferir a disponibilidade geral ou duração da indisponibilidade do provedor.
+- Regressões determinísticas: `./.venv/bin/python -m pytest -q tests/test_f8_nearby_stage_diagnosis.py tests/test_f3_deadline_transport.py` — **20 passed**. `uv run` não estava disponível no PATH desta sessão; os testes foram executados pelo Python do ambiente virtual local.
+- Não houve repetição imediata da chamada real após o 502, para respeitar cooldown e evitar pressão desnecessária no provedor. O aceite operacional continua pendente até uma execução bem-sucedida quando o upstream estiver disponível.
+
+## Revalidação ampliada: cinco buscas distintas (2026-11-23)
+
+A pedido do operador, foram executadas cinco chamadas reais e sequenciais de `osm_find_nearby`, cada uma para local/categoria diferentes:
+
+| # | Local | Categoria solicitada | Resultado MCP |
+| --- | --- | --- | --- |
+| 1 | Mercado Municipal de São Paulo, São Paulo | `bakeries` | `upstream_error`, sem POIs |
+| 2 | Parque Ibirapuera, São Paulo | `food` (normalizada para `restaurants and food`) | `upstream_error`, sem POIs |
+| 3 | Praça da Liberdade, Belo Horizonte | `libraries` | `upstream_error`, sem POIs |
+| 4 | Jardim Botânico do Rio de Janeiro, Rio de Janeiro | `tourist_attractions` (normalizada para `tourist attractions`) | `upstream_error`, sem POIs |
+| 5 | Estação da Luz, São Paulo | `groceries` | `upstream_error`, sem POIs |
+
+A imagem executada foi previamente identificada como revisão `ba61872b6b27c6a1da248e8e39b61bd265037c64`, digest `sha256:b9bf03a08a5e87d4e80c5c9cb6c207d2729d6aac3fe9cf5cb6ecde12ee947b92` (versão OCI `0.5.0`). Após as cinco chamadas, `osm_get_health` reportou seis chamadas `osm_find_nearby` desde a inicialização observada (incluindo a chamada de revalidação anterior), seis outcomes `upstream_error` e nenhum `tool_error`. A última falha observada foi `stage=overpass`, `reason=deadline_exceeded`, `http_status=502`; durações `geocode=0,8241 s`, `overpass=14,4882 s`, `elapsed=15,3124 s`, com espera local `overpass=1,8 s`. A chamada encerrou dentro do deadline de 16 s; cache persistente e não degradado.
+
+**Conclusão:** as cinco respostas confirmam falhas repetidas de busca nesta batelada; o diagnóstico detalhado final atribui a falha mais recente ao Overpass (HTTP 502/deadline). O snapshot não preserva telemetria por chamada, portanto não atribuímos estes mesmos tempos individualmente às cinco buscas. O resultado não determina a duração ou abrangência da indisponibilidade do provedor. A refatoração demonstra retorno controlado, atribuição de etapa e respeito ao deadline, mas o critério operacional de uma busca bem-sucedida com 1–3 POIs permanece pendente. Nenhuma chamada extra foi feita após as cinco solicitadas.

@@ -125,3 +125,38 @@ deadline atribuído a `overpass`, deadline após resposta válida atribuído a
 dentro do orçamento, retry não iniciado quando o orçamento não o sustenta,
 contagem de outcome única, ausência de conteúdo upstream na telemetria e no
 log, e ausência de tarefa órfã após o cancelamento.
+
+---
+
+## Revalidação com cinco buscas distintas (2026-11-23)
+
+Após confirmar que a imagem Positronic em execução corresponde à revisão
+refatorada `ba61872b6b27c6a1da248e8e39b61bd265037c64` (imagem
+`sha256:b9bf03a08a5e87d4e80c5c9cb6c207d2729d6aac3fe9cf5cb6ecde12ee947b92`),
+foram feitas cinco chamadas reais e sequenciais de `osm_find_nearby`, variando
+local e categoria:
+
+| # | Local | Categoria solicitada | Resultado |
+| --- | --- | --- | --- |
+| 1 | Mercado Municipal de São Paulo, São Paulo | `bakeries` | `upstream_error`; sem POIs |
+| 2 | Parque Ibirapuera, São Paulo | `food` (normalizada pela ferramenta como `restaurants and food`) | `upstream_error`; sem POIs |
+| 3 | Praça da Liberdade, Belo Horizonte | `libraries` | `upstream_error`; sem POIs |
+| 4 | Jardim Botânico do Rio de Janeiro, Rio de Janeiro | `tourist_attractions` (normalizada como `tourist attractions`) | `upstream_error`; sem POIs |
+| 5 | Estação da Luz, São Paulo | `groceries` | `upstream_error`; sem POIs |
+
+O snapshot de `osm_get_health` após a quinta chamada registrou seis chamadas de
+`osm_find_nearby` desde a inicialização observada (incluindo a busca de
+referência feita antes destas cinco), todas com outcome `upstream_error` e
+nenhum `tool_error`. A última falha foi atribuída a `stage=overpass`,
+`reason=deadline_exceeded`, `http_status=502`; `geocode=0,8241 s`,
+`overpass=14,4882 s`, `elapsed=15,3124 s` e espera local `overpass=1,8 s`.
+A última chamada terminou dentro do prazo configurado de 16 s; cache persistente
+e não degradado.
+
+As cinco respostas ao cliente não continham POIs. A telemetria detalhada acima
+é o snapshot da falha mais recente, não uma medição individual preservada para
+cada chamada. A evidência confirma falhas repetidas no upstream Overpass nesta
+batelada, mas não determina a duração da indisponibilidade nem prova que todos
+os endpoints ou toda a infraestrutura OSM estejam indisponíveis. O aceite
+operacional (`ok` com 1–3 POIs) permanece pendente; não foram feitas chamadas
+adicionais após a batelada solicitada.
