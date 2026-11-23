@@ -20,6 +20,10 @@ OpenRouteService APIs.
   omit queries, locations, request URLs, credentials, and exception tracebacks.
 - Privacy-respecting: no commercial tracking; cache file is
   permission-locked to 0600 and confined to `OSM_CACHE_ALLOWED_DIRS`.
+- Docker-first delivery: the container image is the artifact. It runs as
+  uid 10001, drops all capabilities, adds `no-new-privileges`, keeps the root
+  filesystem read-only, and refuses to start without the required identifiers
+  (exit 78) or as root (exit 77).
 
 ## How to use
 
@@ -34,12 +38,15 @@ and `radius=1000`.
 
 ## Configuration
 
-Two environment variables are mandatory (OSM Nominatim usage policy):
+Three environment variables are mandatory:
 
-- `NOMINATIM_URL` — explicit geocoding backend. For the public service, review
+- `NOMINATIM_URL` — explicit geocoding backend; startup fails when it is
+  unset. For the public service, review
   https://operations.osmfoundation.org/policies/nominatim/ before selection.
 - `USER_AGENT` — outgoing User-Agent header, e.g. `my-agent/1.0 (you@example.com)`.
-- `FROM_HEADER` — contact email in the From header.
+  Required by the OSM Nominatim usage policy.
+- `FROM_HEADER` — contact email in the From header. Required by the OSM
+  Nominatim usage policy.
 
 Optional:
 
@@ -63,10 +70,13 @@ https://github.com/bill-kopp-ai-dev/percival-osm
 
 See especially:
 
-- `README.md` — tool catalogue, configuration, and threat model.
+- `README.md` — tool catalogue, configuration, docker-first deployment and
+  the security model.
 - `osm://security/nanobot-policy` — security and provider-use policy shipped
-  inside the wheel and returned by the MCP resource.
-- `docs/security/threat-model.md` — trust boundaries and controls.
+  inside the wheel and returned by the MCP resource
+  (`src/percival_osm_mcp/docs/security/nanobot-policy.md` in the repository).
+- `docs/integrations/percival-osm.md` — managed-runtime integration profile:
+  identity, mounts, cache and upstream policy for the deployed container.
 
 ## License
 

@@ -17,13 +17,13 @@
 # Run (stdio — works with nanobot / opencode / any MCP client that
 # connects via the docker CLI):
 #   docker run --rm -i \
-#     -e USER_AGENT='percival-osm/0.4.1 (you@example.com)' \
+#     -e USER_AGENT='percival-osm/0.5.0 (you@example.com)' \
 #     -e FROM_HEADER='you@example.com' \
 #     percival-osm:local
 #
 # Run (streamable-http for Docker MCP Toolkit / browser clients):
 #   docker run --rm -p 8080:8080 \
-#     -e USER_AGENT='percival-osm/0.4.1 (you@example.com)' \
+#     -e USER_AGENT='percival-osm/0.5.0 (you@example.com)' \
 #     -e FROM_HEADER='you@example.com' \
 #     -e MCP_OSM_AUTH_TOKEN=$(openssl rand -hex 32) \
 #     -e MODE=streamable-http \

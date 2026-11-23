@@ -16,6 +16,13 @@ controle do operador.
 
 - Servidor MCP Python (≥ 3.11) com transporte **stdio** e
   **streamable-HTTP**.
+- Entrega **docker-first**: a imagem de container é o artefato e o contrato;
+  o pacote Python é biblioteca interna da imagem. O entrypoint valida o
+  ambiente (exit 78) e recusa execução como root (exit 77); a camada de init
+  pertence ao launcher; a imagem não embute healthcheck (stdio não tem probe
+  verdadeiro) e o perfil HTTP do Compose faz handshake MCP real. O
+  `docker-compose.yml` é **fixture local** — containers de produção são
+  configurados pelo manager Positronic/Percival, owner da configuração.
 - 8 ferramentas MCP expostas por padrão. Todas as 14 ferramentas canônicas e
   23 aliases por categoria permanecem implementados e podem ser selecionados
   via `OSM_EXPOSED_TOOLS`, com aliases ainda sujeitos a
@@ -28,21 +35,21 @@ controle do operador.
   single-flight.
 - Observabilidade: `osm_get_health`, `osm_get_version`,
   `osm_get_security_metrics`, logging estruturado em stderr.
-- Suporte Docker "first-class": imagem multi-stage hardened (uid 10001,
-  cap_drop ALL, no-new-privileges, read-only root, sem init embutido —
-  a camada de init pertence ao launcher), entrypoint com validação de
-  env (USER_AGENT/FROM_HEADER) e recusa de execução como root,
-  `docker-compose.yml` com perfis stdio e http, e artefatos para submissão
+- Imagem multi-stage digest-pinned e reprodutível (uid 10001, cap_drop ALL,
+  no-new-privileges, read-only root, sem init embutido), `docker-compose.yml`
+  com perfis stdio e http e secrets por arquivo, e artefatos para submissão
   ao Docker MCP Catalog
   (`servers/percival-osm/{server.yaml,tools.json,readme.md}`).
 - CI GitHub Actions (`.github/workflows/docker.yml`) com build
-  linux/amd64 e smoke test da imagem.
+  linux/amd64, probe de conformidade stdio, smoke test da imagem, render dos
+  contratos Compose, manifesto de build, SBOM CycloneDX e suíte Python.
 
 **Evidência de sucesso:**
 
-- `uv run pytest -v` — suíte completa (76 testes, alvo < 1s).
+- `uv run pytest -v` — suíte completa (174 testes, alvo < 1s).
 - `scripts/docker-smoke-test.sh` — 4 checks (non-root, env-var guard,
-  stdio MCP round-trip, tools/list coverage) sobre `percival-osm:local`.
+  probe de conformidade stdio com initialize/tools/list, e contrato HTTP com
+  auth/bind/health/shutdown) sobre `percival-osm:local`.
 - `scripts/docker-inspect.sh` — confirma labels OCI, healthcheck,
   user/entrypoint/cmd e site-packages resolvido.
 - `bandit` e `pip-audit` sem achados críticos.
@@ -56,7 +63,7 @@ controle do operador.
   `pydantic-settings`, `starlette`, `uvicorn` (ver `pyproject.toml`).
 - Build backend: `hatchling`; pacote `src/percival_osm_mcp`; entry point
   `percival-osm-mcp`.
-- Execução local:
+- Execução local (caminho de **desenvolvimento**, não de deploy):
   - `uv sync` para ambiente editável com dev-deps.
   - `PYTHONPATH=src .venv/bin/python -m percival_osm_mcp --mode stdio`
     para uso direto como MCP.
@@ -65,7 +72,11 @@ controle do operador.
   `OSM_CACHE_ALLOWED_DIRS`, `ORS_API_KEY`, `USER_AGENT`, `FROM_HEADER` e
   flags de observabilidade/segurança listados em `.env.example`
   (documentação apenas — nada lê esse arquivo).
-- Imagem Docker e `docker-compose.yml` fornecidos para deploy isolado.
+- `NOMINATIM_URL` é obrigatório e explícito: sem backend selecionado o
+  servidor aborta no startup.
+- Imagem Docker (`Dockerfile`) e `docker-compose.yml` fornecidos. O Compose
+  é fixture local; o deploy de produção é configurado pelo manager
+  Positronic/Percival, que é o owner do runtime.
 
 ## Risks and governance
 
@@ -83,22 +94,36 @@ controle do operador.
 - Upstreams permitidos (allow-list): `nominatim.openstreetmap.org`,
   `overpass-api.de`, `api.heigit.org` — qualquer novo host
   precisa de revisão de política.
+- **Issue aberta (2026-11-23)**: `osm_find_nearby` falha contra o endpoint
+  público do Overpass (`HTTP 502` → `upstream_error` com `stage=overpass`).
+  O geocoding público estava saudável na mesma batelada. A causa raiz foi
+  atribuída ao provedor; o aceite operacional (busca nearby bem-sucedida)
+  permanece pendente de disponibilidade externa. Ver
+  `docs/issues/2026-11-23-nearby-search-upstream-failures.md`. A política de
+  upstream não foi afrouxada para contornar a indisponibilidade.
 
 ## Verification
 
-- `uv run pytest -v` — suíte completa.
+- `uv run pytest -v` — suíte completa (174 testes).
 - `uv run pytest tests/test_s5_primitives.py` — prompts, resources,
   regressões.
 - `uv run pytest tests/test_s3_observability.py` — health, version,
   logging estruturado, rate limit.
 - `uv run pytest tests/test_runtime_security.py` — URL policy e
   sanitização.
+- `uv run pytest tests/test_d6_docker.py` — Dockerfile, entrypoint,
+  fixture Compose e artefatos do catálogo.
+- `uv run pytest tests/test_f8_nearby_stage_diagnosis.py` — atribuição de
+  etapa upstream, orçamento de deadline e retry limitado.
 - Inspeção manual via MCP inspector com `osm_get_health` e
   `osm_get_security_metrics` antes de qualquer release.
 
 ## Working conventions
 
 - Stack Python, `uv` e layout `src/` são fixados; mudanças exigem ADR.
+- Entrega é **docker-first**: a imagem é o artefato, o entrypoint é o
+  contrato e o manager Positronic/Percival é o owner do runtime. O Compose
+  é fixture local e não define produção.
 - Logs do servidor: **stderr apenas**; stdout é o stream MCP.
 - Configuração: variáveis de ambiente; nada de `env_file` em disco.
 - Falhas de configuração devem ser altas (`ValueError`), nunca
